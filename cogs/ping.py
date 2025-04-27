@@ -8,7 +8,7 @@ class Example(commands.Cog):
 
     @app_commands.command(name="ping", description="Ping the bot.")
     async def ping(self, interaction: discord.Interaction):
-        await interaction.response.send_message("🏓 Pong!")
+        await interaction.response.send_message("🏓 Pong! ERWERRERER")
 
 async def setup(bot):
     await bot.add_cog(Example(bot))
