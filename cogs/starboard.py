@@ -1,9 +1,18 @@
+import re
 import discord
 from discord import app_commands
 from discord.ext import commands
 
 class StarboardConfig:
-    def __init__(self, watch_channel_id: int, emoji: str, only_attachments: bool, hall_of_fame_id: int, auto_thread: bool, threshold: int):
+    def __init__(
+        self,
+        watch_channel_id: int,
+        emoji: str,
+        only_attachments: bool,
+        hall_of_fame_id: int,
+        auto_thread: bool,
+        threshold: int
+    ):
         self.watch_channel_id = watch_channel_id
         self.emoji = emoji
         self.only_attachments = only_attachments
@@ -14,10 +23,18 @@ class StarboardConfig:
 class Starboard(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.configs = {}  # guild_id: StarboardConfig
-        self.starred_messages = set()  # (guild_id, message_id)
+        self.configs: dict[int, StarboardConfig] = {}
+        self.starred_messages: set[tuple[int, int]] = set()
 
-    @app_commands.command(name="starboard", description="Set up the starboard configuration.")
+    def _parse_channel(self, input_str: str, guild: discord.Guild) -> discord.TextChannel | None:
+        # Match <#id> or raw id
+        m = re.match(r"<#!?(\d+)>", input_str)
+        channel_id = int(m.group(1)) if m else (int(input_str) if input_str.isdigit() else None)
+        if channel_id:
+            return guild.get_channel(channel_id)
+        return None
+
+    @app_commands.command(name="starboard", description="Configure or update starboard settings")
     @app_commands.describe(
         channels="Channel to monitor for stars",
         emoji="Emoji to count for stars",
@@ -29,30 +46,44 @@ class Starboard(commands.Cog):
     async def starboard(
         self,
         interaction: discord.Interaction,
-        channels: discord.TextChannel,
+        channels: str,
         emoji: str,
         only_attachments: bool = False,
-        hall_of_fame: discord.TextChannel = None,
+        hall_of_fame: str = None,
         auto_thread: bool = False,
         threshold: int = 1
     ):
         await interaction.response.defer(ephemeral=True)
 
+        # Parse watch channel
+        watch_channel = self._parse_channel(channels, interaction.guild)
+        if not watch_channel:
+            await interaction.followup.send("❌ Invalid watch channel.", ephemeral=True)
+            return
+
+        # Parse hall_of_fame channel or default
+        hall_channel = watch_channel
+        if hall_of_fame:
+            parsed = self._parse_channel(hall_of_fame, interaction.guild)
+            if not parsed:
+                await interaction.followup.send("❌ Invalid hall_of_fame channel.", ephemeral=True)
+                return
+            hall_channel = parsed
+
         cfg = StarboardConfig(
-            watch_channel_id=channels.id,
+            watch_channel_id=watch_channel.id,
             emoji=emoji,
             only_attachments=only_attachments,
-            hall_of_fame_id=hall_of_fame.id if hall_of_fame else channels.id,
+            hall_of_fame_id=hall_channel.id,
             auto_thread=auto_thread,
             threshold=threshold
         )
-
-        self.configs[interaction.guild_id] = cfg
+        self.configs[interaction.guild.id] = cfg
 
         await interaction.followup.send(
-            f"✅ Starboard set for {channels.mention} with emoji `{emoji}`\n"
+            f"✅ Starboard set for {watch_channel.mention} with emoji `{emoji}`\n"
             f"• Only attachments: {only_attachments}\n"
-            f"• Hall of Fame: {(hall_of_fame.mention if hall_of_fame else channels.mention)}\n"
+            f"• Hall of Fame: {hall_channel.mention}\n"
             f"• Auto threads: {auto_thread}\n"
             f"• Threshold: {threshold}",
             ephemeral=True
@@ -60,7 +91,7 @@ class Starboard(commands.Cog):
 
     @commands.Cog.listener()
     async def on_reaction_add(self, reaction: discord.Reaction, user: discord.User):
-        if user.bot or not reaction.message.guild:
+        if user.bot or reaction.message.guild is None:
             return
 
         guild_id = reaction.message.guild.id
@@ -82,12 +113,10 @@ class Starboard(commands.Cog):
 
         message_key = (guild_id, reaction.message.id)
         if message_key in self.starred_messages:
-            return  # Already posted
+            return
 
-        self.starred_messages.add(message_key)
-
-        hall_channel = reaction.message.guild.get_channel(config.hall_of_fame_id)
-        if not hall_channel:
+        hall = reaction.message.guild.get_channel(config.hall_of_fame_id)
+        if not hall:
             return
 
         embed = discord.Embed(
@@ -103,10 +132,11 @@ class Starboard(commands.Cog):
         if reaction.message.attachments:
             embed.set_image(url=reaction.message.attachments[0].url)
 
-        sent_message = await hall_channel.send(embed=embed)
+        sent_msg = await hall.send(embed=embed)
+        self.starred_messages.add(message_key)
 
         if config.auto_thread:
-            await sent_message.create_thread(name="Star Discussion")
+            await sent_msg.create_thread(name="Starboard Discussion")
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Starboard(bot))
