@@ -11,27 +11,20 @@ class MyBot(commands.Bot):
         super().__init__(
             command_prefix="!",
             intents=intents,
-            application_id=os.getenv("APPLICATION_ID"),
+            application_id=int(os.getenv("APPLICATION_ID")),
+            tree_cls=app_commands.CommandTree      # ← Use default tree_cls
         )
-        self.tree = app_commands.CommandTree(self)
+        self.GUILD_ID = int(os.getenv("GUILD_ID"))
 
     async def setup_hook(self):
-        # For rapid testing, sync to a guild:
-        # await self.tree.sync(guild=discord.Object(id=GUILD_ID))
-        await self.tree.sync()  # Global sync :contentReference[oaicite:3]{index=3}
+        # sync only to your guild for instant slash updates
+        await self.tree.sync(guild=discord.Object(id=self.GUILD_ID))
+        print(f"Slash commands synced to guild {self.GUILD_ID}")
 
 bot = MyBot()
 
 @bot.tree.command(name="ping", description="Replies with Pong!")
 async def ping(interaction: discord.Interaction):
     await interaction.response.send_message("Pong!")
-
-@bot.tree.command(
-    name="echo",
-    description="Echoes your message back to you"
-)
-@app_commands.describe(text="The text to echo")
-async def echo(interaction: discord.Interaction, text: str):
-    await interaction.response.send_message(text)
 
 bot.run(os.getenv("DISCORD_TOKEN"))
