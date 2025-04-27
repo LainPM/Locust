@@ -40,7 +40,7 @@ class MyBot(commands.Bot):
         # 2) Sync only the commands defined in code
         await self.tree.sync(guild=discord.Object(id=self.GUILD_ID))            # register fresh commands :contentReference[oaicite:8]{index=8}
         # 3) Load your cogs (each cog’s setup() can also register commands)
-        await self.load_extension("cogs.example")                                # load existing commands :contentReference[oaicite:9]{index=9}
+        await self.load_extension("cogs.ping")                                # load existing commands :contentReference[oaicite:9]{index=9}
         print(f"✅ Cleared & synced slash commands, then loaded cogs for guild {self.GUILD_ID}")
 
 # ─── Instantiate & Run ─────────────────────────────────────────────────
