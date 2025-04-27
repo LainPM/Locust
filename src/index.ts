@@ -1,10 +1,10 @@
-import { Client, Collection, Intents } from 'discord.js';
+import { Client, Collection, GatewayIntentBits } from 'discord.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import dotenv from 'dotenv';
 
 dotenv.config();
-const client = new Client({ intents: [Intents.FLAGS.Guilds] });
+const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 client.commands = new Collection();
 
 const commandsPath = path.join(__dirname, 'commands');
