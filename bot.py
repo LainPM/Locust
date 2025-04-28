@@ -15,8 +15,7 @@ class MyBot(commands.Bot):
     async def setup_hook(self):
         # Load cogs here
         await self.load_extension("cogs.ping")
-        await self.load_extension("cogs.starboard")
-
+        
         print("Cogs loaded and slash commands synced.")
 
 bot = MyBot()
