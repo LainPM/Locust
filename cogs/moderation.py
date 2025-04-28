@@ -288,6 +288,53 @@ class Moderation(commands.Cog):
         embed.set_footer(text=f"User ID: {user.id}")
         
         await interaction.response.send_message(embed=embed)
+        
+    @app_commands.command(name="unmute", description="Remove timeout from a user")
+    @app_commands.describe(
+        user="The user to unmute",
+        reason="Reason for removing the timeout"
+    )
+    async def unmute(self, 
+                    interaction: discord.Interaction, 
+                    user: discord.Member, 
+                    reason: str = None):
+        # Check if user has permission
+        if not self.check_permissions(interaction):
+            return await interaction.response.send_message("You don't have permission to use this command!", ephemeral=True)
+        
+        # Check if the bot can timeout the user
+        if not interaction.guild.me.guild_permissions.moderate_members:
+            return await interaction.response.send_message("I don't have permission to manage timeouts!", ephemeral=True)
+        
+        # Check if trying to unmute someone with higher role
+        if user.top_role >= interaction.user.top_role and interaction.user.id != interaction.guild.owner_id:
+            return await interaction.response.send_message("You cannot unmute someone with a higher or equal role!", ephemeral=True)
+        
+        # Check if the user is actually timed out
+        if not user.is_timed_out():
+            return await interaction.response.send_message(f"{user.mention} is not currently muted/timed out.", ephemeral=True)
+        
+        try:
+            # Remove timeout by setting it to None
+            await user.timeout(None, reason=reason)
+            
+            # Create embed
+            embed = discord.Embed(
+                title="User Unmuted",
+                description=f"{user.mention} has been unmuted.",
+                color=discord.Color.from_rgb(0, 255, 0),  # Green color
+                timestamp=datetime.datetime.now()
+            )
+            embed.add_field(name="Reason", value=reason or "No reason provided", inline=False)
+            embed.add_field(name="Unmuted by", value=interaction.user.mention, inline=False)
+            embed.set_thumbnail(url=user.display_avatar.url)
+            embed.set_footer(text=f"User ID: {user.id}")
+            
+            await interaction.response.send_message(embed=embed)
+        except discord.Forbidden:
+            await interaction.response.send_message("I don't have permission to unmute this user!", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"An error occurred: {str(e)}", ephemeral=True)
 
 async def setup(bot):
     await bot.add_cog(Moderation(bot))
