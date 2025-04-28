@@ -1,15 +1,10 @@
-# cogs/ping.py
-import discord
-from discord.ext import commands
-from discord import app_commands
+import { ChatInputCommandInteraction, SlashCommandBuilder } from 'discord.js';
 
-class Ping(commands.Cog):
-    def __init__(self, bot):
-        self.bot = bot
+export const data = new SlashCommandBuilder()
+  .setName('ping')
+  .setDescription('Replies with latency.');
 
-    @app_commands.command(name="ping", description="Replies with Pong!")
-    async def ping(self, interaction: discord.Interaction):
-        await interaction.response.send_message("🏓 Pong!")
-
-async def setup(bot):
-    await bot.add_cog(Ping(bot))
+export async function execute(interaction: ChatInputCommandInteraction) {
+  const latency = Date.now() - interaction.createdTimestamp;
+  await interaction.reply(`Latency: ${latency}ms`);
+}
