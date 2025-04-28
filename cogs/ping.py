@@ -12,8 +12,7 @@ class Ping(commands.Cog):
         latency = round(self.bot.latency * 1000)
         
         embed = discord.Embed(
-            title="Latency",
-            description=f"```{latency}ms```",
+            description=f"**Latency:** `{latency}ms`",
             color=discord.Color.from_rgb(255, 105, 180)  # Pink color
         )
         
