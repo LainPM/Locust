@@ -10,7 +10,8 @@ intents.message_content = True
 
 class MyBot(commands.Bot):
     def __init__(self):
-        super().__init__(command_prefix="!", intents=intents)
+        # Using None as command_prefix since we're only using slash commands
+        super().__init__(command_prefix=None, intents=intents)
         
     async def setup_hook(self):
         # Auto-load all cogs from the cogs directory
