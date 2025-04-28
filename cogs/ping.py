@@ -1,10 +1,16 @@
-import { ChatInputCommandInteraction, SlashCommandBuilder } from 'discord.js';
+# cogs/ping.py
+import discord
+from discord.ext import commands
+from discord import app_commands
 
-export const data = new SlashCommandBuilder()
-  .setName('ping')
-  .setDescription('Replies with latency.');
+class Ping(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
 
-export async function execute(interaction: ChatInputCommandInteraction) {
-  const latency = Date.now() - interaction.createdTimestamp;
-  await interaction.reply(`Latency: ${latency}ms`);
-}
+    @app_commands.command(name="ping", description="Shows the bot's latency!")
+    async def ping(self, interaction: discord.Interaction):
+        latency = round(self.bot.latency * 1000)
+        await interaction.response.send_message(f"🏓 Latency: {latency}ms")
+
+async def setup(bot):
+    await bot.add_cog(Ping(bot))
