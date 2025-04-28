@@ -30,21 +30,24 @@ class Moderation(commands.Cog):
         embed.set_footer(text=f"User ID: {target.id}")
         return embed
 
+    # Define a default permissions check that will determine command visibility
+    async def mod_command_permissions(interaction: discord.Interaction) -> bool:
+        # Only show command to users with kick or ban permissions
+        return (interaction.user.guild_permissions.ban_members or 
+                interaction.user.guild_permissions.kick_members)
+
     @app_commands.command(name="mute", description="Timeout a user for a specified duration")
     @app_commands.describe(
         user="The user to mute",
         duration="Duration in minutes (default: 10)",
         reason="Reason for the mute"
     )
+    @app_commands.check(mod_command_permissions)  # Add this line to hide command
     async def mute(self, 
                   interaction: discord.Interaction, 
                   user: discord.Member, 
                   duration: int = 10, 
                   reason: str = None):
-        # Check if user has permission
-        if not self.check_permissions(interaction):
-            return await interaction.response.send_message("You don't have permission to use this command!", ephemeral=True)
-        
         # Check if the bot can timeout the user
         if not interaction.guild.me.guild_permissions.moderate_members:
             return await interaction.response.send_message("I don't have permission to timeout members!", ephemeral=True)
@@ -71,14 +74,11 @@ class Moderation(commands.Cog):
         user="The user to unmute",
         reason="Reason for removing the timeout"
     )
+    @app_commands.check(mod_command_permissions)  # Add this line to hide command
     async def unmute(self, 
                     interaction: discord.Interaction, 
                     user: discord.Member, 
                     reason: str = None):
-        # Check if user has permission
-        if not self.check_permissions(interaction):
-            return await interaction.response.send_message("You don't have permission to use this command!", ephemeral=True)
-        
         # Check if the bot can timeout the user
         if not interaction.guild.me.guild_permissions.moderate_members:
             return await interaction.response.send_message("I don't have permission to manage timeouts!", ephemeral=True)
@@ -118,17 +118,18 @@ class Moderation(commands.Cog):
         user="The user to kick",
         reason="Reason for the kick"
     )
+    @app_commands.check(mod_command_permissions)  # Add this line to hide command
     async def kick(self, 
                   interaction: discord.Interaction, 
                   user: discord.Member, 
                   reason: str = None):
-        # Check if user has permission
-        if not interaction.user.guild_permissions.kick_members:
-            return await interaction.response.send_message("You don't have permission to kick members!", ephemeral=True)
-        
         # Check if the bot can kick
         if not interaction.guild.me.guild_permissions.kick_members:
             return await interaction.response.send_message("I don't have permission to kick members!", ephemeral=True)
+        
+        # Check if user has permission
+        if not interaction.user.guild_permissions.kick_members:
+            return await interaction.response.send_message("You don't have permission to kick members!", ephemeral=True)
         
         # Check if trying to kick someone with higher role
         if user.top_role >= interaction.user.top_role and interaction.user.id != interaction.guild.owner_id:
@@ -149,6 +150,7 @@ class Moderation(commands.Cog):
         delete_days="Number of days of messages to delete (0-7)",
         reason="Reason for the ban"
     )
+    @app_commands.check(mod_command_permissions)  # Add this line to hide command
     async def ban(self, 
                  interaction: discord.Interaction, 
                  user: discord.Member, 
@@ -185,14 +187,11 @@ class Moderation(commands.Cog):
         user="The user to warn",
         reason="Reason for the warning"
     )
+    @app_commands.check(mod_command_permissions)  # Add this line to hide command
     async def warn(self, 
                   interaction: discord.Interaction, 
                   user: discord.Member, 
                   reason: str = "No reason provided"):
-        # Check if user has permission
-        if not self.check_permissions(interaction):
-            return await interaction.response.send_message("You don't have permission to warn members!", ephemeral=True)
-        
         # Check if trying to warn someone with higher role
         if user.top_role >= interaction.user.top_role and interaction.user.id != interaction.guild.owner_id:
             return await interaction.response.send_message("You cannot warn someone with a higher or equal role!", ephemeral=True)
@@ -255,13 +254,10 @@ class Moderation(commands.Cog):
     @app_commands.describe(
         user="The user to check warnings for"
     )
+    @app_commands.check(mod_command_permissions)  # Add this line to hide command
     async def warnings(self, 
                       interaction: discord.Interaction, 
                       user: discord.Member):
-        # Check if user has permission
-        if not self.check_permissions(interaction):
-            return await interaction.response.send_message("You don't have permission to view warnings!", ephemeral=True)
-        
         guild_id = interaction.guild.id
         user_id = user.id
         
@@ -303,6 +299,7 @@ class Moderation(commands.Cog):
     @app_commands.describe(
         user="The user to clear warnings for"
     )
+    @app_commands.check(mod_command_permissions)  # Add this line to hide command
     async def clearwarnings(self, 
                            interaction: discord.Interaction, 
                            user: discord.Member):
@@ -334,6 +331,16 @@ class Moderation(commands.Cog):
         embed.set_footer(text=f"User ID: {user.id}")
         
         await interaction.response.send_message(embed=embed)
+
+    # Error handler for command checks
+    async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        if isinstance(error, app_commands.errors.CheckFailure):
+            # This error will occur when someone without permission tries to use a command
+            # We don't need to respond since the command will be hidden anyway
+            pass
+        else:
+            # Handle other errors normally
+            await interaction.response.send_message(f"An error occurred: {str(error)}", ephemeral=True)
 
 async def setup(bot):
     await bot.add_cog(Moderation(bot))
