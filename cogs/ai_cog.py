@@ -317,9 +317,10 @@ class AICog(commands.Cog):
         # If message starts with "Hey Axis" or conversation is active
         if content.lower().startswith("hey axis") or is_active:
             # Check for conversation exit commands
-            if is_active and content.lower() in ["stop", "end", "exit", "bye", "goodbye", "end chat", "stop chat", "ok stop", "okay stop"]:
+            if is_active and content.lower() in ["stop", "end", "exit", "bye", "goodbye", "end chat", "stop chat"]:
                 await self.mark_conversation_inactive(user_id, channel_id)
-                await message.channel.send("I'll be here if you need me again! Just say 'Hey Axis'.")
+                # Use reply() instead of channel.send()
+                await message.reply("I'll be here if you need me again! Just say 'Hey Axis'.")
                 return
                 
             # If message starts with "Hey Axis", remove that part to get the query
@@ -328,7 +329,8 @@ class AICog(commands.Cog):
                 
                 # If no query after "Hey Axis", just greet
                 if not query:
-                    await message.channel.send("Hey there! How can I help you today? We're now in conversation mode, so you can keep chatting with me without saying 'Hey Axis' each time. Just say 'stop' when you're done.")
+                    # Use reply() instead of channel.send()
+                    await message.reply("Hey there! How can I help you today? We're now in conversation mode, so you can keep chatting with me without saying 'Hey Axis' each time. Just say 'stop' when you're done.")
                     await self.mark_conversation_active(user_id, channel_id)
                     return
             else:
@@ -346,7 +348,7 @@ class AICog(commands.Cog):
                         await self.process_ai_query(message, query)
                     except Exception as e:
                         print(f"AI Cog: Error processing AI query: {e}")
-                        await message.channel.send(f"Sorry, I encountered an error: {str(e)}")
+                        await message.reply(f"Sorry, I encountered an error: {str(e)}")
 
     async def process_ai_query(self, message, query):
         """Process an AI query and respond"""
@@ -374,11 +376,11 @@ class AICog(commands.Cog):
         
         # If approaching token limit, warn user and continue
         if estimated_tokens > self.max_tokens_warning and estimated_tokens <= self.max_tokens_limit:
-            await message.channel.send("⚠️ Our conversation is getting quite long. Consider saying 'end chat' soon to restart with a fresh context.")
+            await message.reply("⚠️ Our conversation is getting quite long. Consider saying 'end chat' soon to restart with a fresh context.")
         
         # If exceeding token limit, auto-end conversation
         if estimated_tokens > self.max_tokens_limit:
-            await message.channel.send("Our conversation has reached the context limit. I'll need to end this chat session. Feel free to start a new one with 'Hey Axis'!")
+            await message.reply("Our conversation has reached the context limit. I'll need to end this chat session. Feel free to start a new one with 'Hey Axis'!")
             await self.mark_conversation_inactive(user_id, channel_id)
             await self.clear_conversation(None, user_id, channel_id)
             return
