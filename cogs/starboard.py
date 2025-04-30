@@ -63,6 +63,8 @@ class Starboard(commands.Cog):
                             message = await channel.fetch_message(post["message_id"])
                         except (discord.NotFound, discord.Forbidden):
                             # Message was deleted or can't be accessed
+                            # Remove from database
+                            await self.starboard_posts.delete_one({"_id": post["_id"]})
                             continue
                         
                         # Create the featured post embed
@@ -125,11 +127,24 @@ class Starboard(commands.Cog):
                         message = await channel.fetch_message(post["message_id"])
                         star_emoji = server_settings.get("star_emoji", "⭐")
                         
-                        # Count reactions
+                        # Count reactions properly (excluding the author's reaction)
                         star_count = 0
                         for reaction in message.reactions:
                             if str(reaction.emoji) == star_emoji:
-                                star_count = reaction.count
+                                # Get list of users who reacted
+                                users = []
+                                async for user in reaction.users():
+                                    users.append(user.id)
+                                
+                                # Only count reactions from non-bots who aren't the message author
+                                valid_users = [user_id for user_id in users if user_id != message.author.id]
+                                non_bot_users = []
+                                for user_id in valid_users:
+                                    member = guild.get_member(user_id)
+                                    if member and not member.bot:
+                                        non_bot_users.append(user_id)
+                                
+                                star_count = len(non_bot_users)
                                 break
                         
                         # If star count has changed, update the featured message
@@ -151,9 +166,13 @@ class Starboard(commands.Cog):
                                 
                             except (discord.NotFound, discord.Forbidden):
                                 # Featured message was deleted or can't be accessed
+                                # If featured message was deleted, remove from database
+                                await self.starboard_posts.delete_one({"_id": post["_id"]})
                                 continue
                     except (discord.NotFound, discord.Forbidden):
                         # Original message was deleted or can't be accessed
+                        # Remove from database
+                        await self.starboard_posts.delete_one({"_id": post["_id"]})
                         continue
                 
                 # Check every 30 seconds
@@ -201,7 +220,6 @@ class Starboard(commands.Cog):
         
         return embed
     
-    @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload):
         """Handle reaction being added to messages"""
         # Ignore bot reactions
@@ -235,7 +253,25 @@ class Starboard(commands.Cog):
         try:
             message = await channel.fetch_message(payload.message_id)
         except (discord.NotFound, discord.Forbidden):
+            # Message was deleted or can't be accessed
+            # Remove from database if exists
+            await self.starboard_posts.delete_one({
+                "guild_id": payload.guild_id,
+                "channel_id": payload.channel_id,
+                "message_id": payload.message_id
+            })
             return
+        
+        # Check if user is reacting to their own message and remove their reaction if so
+        if payload.user_id == message.author.id:
+            try:
+                # Remove their reaction
+                for reaction in message.reactions:
+                    if str(reaction.emoji) == star_emoji:
+                        await reaction.remove(payload.member)
+                        return  # Exit early after removing their reaction
+            except (discord.Forbidden, discord.NotFound):
+                pass  # Can't remove reaction for some reason
         
         # Check attachments setting
         attachments_only = server_settings.get("attachments_only", False)
@@ -246,7 +282,20 @@ class Starboard(commands.Cog):
         star_count = 0
         for reaction in message.reactions:
             if str(reaction.emoji) == star_emoji:
-                star_count = reaction.count
+                # Get list of users who reacted
+                users = []
+                async for user in reaction.users():
+                    users.append(user.id)
+                
+                # Only count reactions from non-bots who aren't the message author
+                valid_users = [user_id for user_id in users if user_id != message.author.id]
+                non_bot_users = []
+                for user_id in valid_users:
+                    member = guild.get_member(user_id)
+                    if member and not member.bot:
+                        non_bot_users.append(user_id)
+                
+                star_count = len(non_bot_users)
                 break
         
         # Check if the post is already in the database
@@ -300,8 +349,7 @@ class Starboard(commands.Cog):
             except (discord.Forbidden, discord.HTTPException):
                 pass
     
-    @commands.Cog.listener()
-    async def on_raw_reaction_remove(self, payload):
+        async def on_raw_reaction_remove(self, payload):
         """Handle reaction being removed from messages"""
         # Get server settings
         server_settings = await self.starboard_settings.find_one({"guild_id": payload.guild_id})
@@ -330,13 +378,33 @@ class Starboard(commands.Cog):
         try:
             message = await channel.fetch_message(payload.message_id)
         except (discord.NotFound, discord.Forbidden):
+            # Message was deleted or can't be accessed
+            # Remove from database if exists
+            await self.starboard_posts.delete_one({
+                "guild_id": payload.guild_id,
+                "channel_id": payload.channel_id,
+                "message_id": payload.message_id
+            })
             return
         
-        # Count the stars
+        # Count the stars properly (excluding the author's reaction)
         star_count = 0
         for reaction in message.reactions:
             if str(reaction.emoji) == star_emoji:
-                star_count = reaction.count
+                # Get list of users who reacted
+                users = []
+                async for user in reaction.users():
+                    users.append(user.id)
+                
+                # Only count reactions from non-bots who aren't the message author
+                valid_users = [user_id for user_id in users if user_id != message.author.id]
+                non_bot_users = []
+                for user_id in valid_users:
+                    member = guild.get_member(user_id)
+                    if member and not member.bot:
+                        non_bot_users.append(user_id)
+                
+                star_count = len(non_bot_users)
                 break
         
         # Check if the post is in the database
@@ -352,6 +420,7 @@ class Starboard(commands.Cog):
                 {"_id": post["_id"]},
                 {"$set": {"star_count": star_count}}
             )
+        
     
     @commands.Cog.listener()
     async def on_message(self, message):
@@ -396,6 +465,18 @@ class Starboard(commands.Cog):
                 await message.create_thread(name=thread_name[:100], auto_archive_duration=1440)  # 24 hours
             except (discord.Forbidden, discord.HTTPException):
                 pass
+        
+        # Create initial entry in database
+        star_count = 0  # Start with 0 stars
+        await self.starboard_posts.insert_one({
+            "guild_id": message.guild.id,
+            "channel_id": message.channel.id,
+            "message_id": message.id,
+            "author_id": message.author.id,
+            "star_count": star_count,
+            "featured": False,
+            "created_at": datetime.datetime.now()
+        })
     
     async def get_server_settings(self, guild_id):
         """Get starboard settings for a server"""
