@@ -36,13 +36,14 @@ class Moderation(commands.Cog):
         duration="Duration in minutes (default: 10)",
         reason="Reason for the mute"
     )
+    @app_commands.default_permissions(moderate_members=True)
     async def mute(self, 
                   interaction: discord.Interaction, 
                   user: discord.Member, 
                   duration: int = 10, 
                   reason: str = None):
         # Check if user has permission
-        if not self.check_permissions(interaction):
+        if not interaction.user.guild_permissions.moderate_members:
             return await interaction.response.send_message("You don't have permission to use this command!", ephemeral=True)
         
         # Check if the bot can timeout the user
@@ -71,12 +72,13 @@ class Moderation(commands.Cog):
         user="The user to unmute",
         reason="Reason for removing the timeout"
     )
+    @app_commands.default_permissions(moderate_members=True)
     async def unmute(self, 
                     interaction: discord.Interaction, 
                     user: discord.Member, 
                     reason: str = None):
         # Check if user has permission
-        if not self.check_permissions(interaction):
+        if not interaction.user.guild_permissions.moderate_members:
             return await interaction.response.send_message("You don't have permission to use this command!", ephemeral=True)
         
         # Check if the bot can timeout the user
@@ -118,6 +120,7 @@ class Moderation(commands.Cog):
         user="The user to kick",
         reason="Reason for the kick"
     )
+    @app_commands.default_permissions(kick_members=True)
     async def kick(self, 
                   interaction: discord.Interaction, 
                   user: discord.Member, 
@@ -149,6 +152,7 @@ class Moderation(commands.Cog):
         delete_days="Number of days of messages to delete (0-7)",
         reason="Reason for the ban"
     )
+    @app_commands.default_permissions(ban_members=True)
     async def ban(self, 
                  interaction: discord.Interaction, 
                  user: discord.Member, 
@@ -185,6 +189,7 @@ class Moderation(commands.Cog):
         user="The user to warn",
         reason="Reason for the warning"
     )
+    @app_commands.default_permissions(kick_members=True)
     async def warn(self, 
                   interaction: discord.Interaction, 
                   user: discord.Member, 
@@ -255,6 +260,7 @@ class Moderation(commands.Cog):
     @app_commands.describe(
         user="The user to check warnings for"
     )
+    @app_commands.default_permissions(kick_members=True)
     async def warnings(self, 
                       interaction: discord.Interaction, 
                       user: discord.Member):
@@ -303,6 +309,7 @@ class Moderation(commands.Cog):
     @app_commands.describe(
         user="The user to clear warnings for"
     )
+    @app_commands.default_permissions(ban_members=True)
     async def clearwarnings(self, 
                            interaction: discord.Interaction, 
                            user: discord.Member):
