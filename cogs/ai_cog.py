@@ -317,7 +317,7 @@ class AICog(commands.Cog):
         # If message starts with "Hey Axis" or conversation is active
         if content.lower().startswith("hey axis") or is_active:
             # Check for conversation exit commands
-            if is_active and content.lower() in ["stop", "end", "exit", "bye", "goodbye", "end chat", "stop chat", "stop talking", "ok stop", "okay stop"]:
+            if is_active and content.lower() in ["stop", "end", "exit", "bye", "goodbye", "end chat", "stop chat", "stop talking", "ok stop", "okay stop", "ok thats all", "ok that's all", "thats all", "that's all"]:
                 await self.mark_conversation_inactive(user_id, channel_id)
                 # Use reply() instead of channel.send()
                 await message.reply("I'll be here if you need me again! Just say 'Hey Axis'.")
