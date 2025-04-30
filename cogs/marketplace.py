@@ -614,73 +614,15 @@ class Marketplace(commands.Cog):
         settings = await self.marketplace_settings.find_one({"guild_id": guild_id})
         return settings
     
-    # Register slash commands properly with the bot's app_commands tree
-    # This is the key part that was missing before
-    async def cog_load(self):
-        # Register commands to the bot tree
-        self.bot.tree.add_command(self.post)
-        self.bot.tree.add_command(self.setup_marketposts)
-        self.bot.tree.add_command(self.marketstats)
-        self.bot.tree.add_command(self.mymarketposts)
-        self.bot.tree.add_command(self.clearmarketposts)
-        self.bot.tree.add_command(self.reset_marketplace)
-    
-    # Define commands as standalone app_commands instead of using decorators on methods
-    post = app_commands.Command(
-        name="post", 
-        description="Create a marketplace post",
-        callback=lambda self, interaction, post_type: self._post_callback(interaction, post_type),
-        extras={"cog": "Marketplace"}
-    )
-    post.add_check(app_commands.guild_only())
-    post.add_choice(name="Hiring", value="Hiring")
-    post.add_choice(name="For-Hire", value="For-Hire")
-    post.add_choice(name="Selling", value="Selling")
-    
-    setup_marketposts = app_commands.Command(
-        name="setup_marketposts",
-        description="Set up the marketplace system",
-        callback=lambda self, interaction: self._setup_marketposts_callback(interaction),
-        default_permissions=discord.Permissions(administrator=True),
-        extras={"cog": "Marketplace"}
-    )
-    setup_marketposts.add_check(app_commands.guild_only())
-    
-    marketstats = app_commands.Command(
-        name="marketstats",
-        description="View marketplace statistics",
-        callback=lambda self, interaction: self._marketstats_callback(interaction),
-        extras={"cog": "Marketplace"}
-    )
-    marketstats.add_check(app_commands.guild_only())
-    
-    mymarketposts = app_commands.Command(
-        name="mymarketposts",
-        description="View your marketplace posts",
-        callback=lambda self, interaction: self._mymarketposts_callback(interaction),
-        extras={"cog": "Marketplace"}
-    )
-    mymarketposts.add_check(app_commands.guild_only())
-    
-    clearmarketposts = app_commands.Command(
-        name="clearmarketposts",
-        description="Clear old marketplace posts",
-        callback=lambda self, interaction, days: self._clearmarketposts_callback(interaction, days),
-        default_permissions=discord.Permissions(administrator=True),
-        extras={"cog": "Marketplace"}
-    )
-    clearmarketposts.add_check(app_commands.guild_only())
-    
-    reset_marketplace = app_commands.Command(
-        name="reset_marketplace",
-        description="Reset marketplace settings",
-        callback=lambda self, interaction: self._reset_marketplace_callback(interaction),
-        default_permissions=discord.Permissions(administrator=True),
-        extras={"cog": "Marketplace"}
-    )
-    reset_marketplace.add_check(app_commands.guild_only())
-    
-    async def _post_callback(self, interaction: discord.Interaction, post_type: str):
+    # Use the normal decorator approach instead of defining commands separately
+    @app_commands.command(name="post", description="Create a marketplace post")
+    @app_commands.guild_only()
+    @app_commands.choices(post_type=[
+        app_commands.Choice(name="Hiring", value="Hiring"),
+        app_commands.Choice(name="For-Hire", value="For-Hire"),
+        app_commands.Choice(name="Selling", value="Selling")
+    ])
+    async def post(self, interaction: discord.Interaction, post_type: str):
         """Create a marketplace post"""
         # Check if marketplace is set up
         guild_id = interaction.guild.id
@@ -693,7 +635,10 @@ class Marketplace(commands.Cog):
         modal = MarketPostModal(post_type, self)
         await interaction.response.send_modal(modal)
     
-    async def _setup_marketposts_callback(self, interaction: discord.Interaction):
+    @app_commands.command(name="setup_marketposts", description="Set up the marketplace system")
+    @app_commands.guild_only()
+    @app_commands.default_permissions(administrator=True)
+    async def setup_marketposts(self, interaction: discord.Interaction):
         """Set up the marketplace system"""
         # Check for admin permissions
         if not interaction.user.guild_permissions.administrator:
@@ -703,176 +648,455 @@ class Marketplace(commands.Cog):
         modal = SetupMarketModal(self)
         await interaction.response.send_modal(modal)
     
-    async def _marketstats_callback(self, interaction: discord.Interaction):
+    # cogs/marketplace.py (continued)
+    @app_commands.command(name="marketplace_stats", description="View marketplace statistics")
+    @app_commands.guild_only()
+    @app_commands.default_permissions(administrator=True)
+    async def marketplace_stats(self, interaction: discord.Interaction):
         """View marketplace statistics"""
         await interaction.response.defer(ephemeral=True)
         
+        # Check for admin permissions
+        if not interaction.user.guild_permissions.administrator:
+            return await interaction.followup.send("You need administrator permissions to view marketplace statistics.", ephemeral=True)
+        
+        # Get statistics from the database
         guild_id = interaction.guild.id
         
-        # Check if marketplace is set up
-        server_settings = await self.get_server_settings(guild_id)
-        if not server_settings:
-            return await interaction.followup.send("Marketplace hasn't been set up in this server. Please ask an admin to run `/setup_marketposts`.", ephemeral=True)
+        # Count posts by status and type
+        pipeline = [
+            {"$match": {"guild_id": guild_id}},
+            {"$group": {
+                "_id": {
+                    "post_type": "$post_type",
+                    "status": "$status"
+                },
+                "count": {"$sum": 1}
+            }}
+        ]
         
-        # Get post statistics
-        hiring_count = await self.marketplace_posts.count_documents({"guild_id": guild_id, "post_type": "Hiring", "status": "approved"})
-        forhire_count = await self.marketplace_posts.count_documents({"guild_id": guild_id, "post_type": "For-Hire", "status": "approved"})
-        selling_count = await self.marketplace_posts.count_documents({"guild_id": guild_id, "post_type": "Selling", "status": "approved"})
+        stats = {}
+        async for result in self.marketplace_posts.aggregate(pipeline):
+            post_type = result["_id"]["post_type"]
+            status = result["_id"]["status"]
+            count = result["count"]
+            
+            if post_type not in stats:
+                stats[post_type] = {}
+            
+            stats[post_type][status] = count
         
-        pending_count = await self.marketplace_posts.count_documents({"guild_id": guild_id, "status": "pending"})
-        declined_count = await self.marketplace_posts.count_documents({"guild_id": guild_id, "status": "declined"})
-        
-        total_count = hiring_count + forhire_count + selling_count
-        
-        # Create statistics embed
-        stats_embed = discord.Embed(
+        # Create embed
+        embed = discord.Embed(
             title="Marketplace Statistics",
-            description=f"Statistics for {interaction.guild.name}'s marketplace",
+            description="Statistics for marketplace posts in this server",
             color=discord.Color.blue(),
             timestamp=datetime.datetime.now()
         )
         
-        stats_embed.add_field(name="Total Approved Posts", value=str(total_count), inline=False)
-        stats_embed.add_field(name="Hiring Posts", value=str(hiring_count), inline=True)
-        stats_embed.add_field(name="For-Hire Posts", value=str(forhire_count), inline=True)
-        stats_embed.add_field(name="Selling Posts", value=str(selling_count), inline=True)
-        stats_embed.add_field(name="Pending Posts", value=str(pending_count), inline=True)
-        stats_embed.add_field(name="Declined Posts", value=str(declined_count), inline=True)
+        # Add stats for each post type
+        for post_type in ["Hiring", "For-Hire", "Selling"]:
+            if post_type in stats:
+                post_stats = stats[post_type]
+                approved = post_stats.get("approved", 0)
+                pending = post_stats.get("pending", 0)
+                declined = post_stats.get("declined", 0)
+                total = approved + pending + declined
+                
+                embed.add_field(
+                    name=f"{post_type} Posts",
+                    value=f"Total: {total}\nApproved: {approved}\nPending: {pending}\nDeclined: {declined}",
+                    inline=True
+                )
+            else:
+                embed.add_field(
+                    name=f"{post_type} Posts",
+                    value="No posts yet",
+                    inline=True
+                )
         
-        stats_embed.set_footer(text=f"Requested by {interaction.user.name}", icon_url=interaction.user.display_avatar.url)
+        # Add overall stats
+        total_approved = sum([stats.get(pt, {}).get("approved", 0) for pt in stats])
+        total_pending = sum([stats.get(pt, {}).get("pending", 0) for pt in stats])
+        total_declined = sum([stats.get(pt, {}).get("declined", 0) for pt in stats])
+        total_posts = total_approved + total_pending + total_declined
         
-        await interaction.followup.send(embed=stats_embed, ephemeral=True)
+        embed.add_field(
+            name="Overall Statistics",
+            value=f"Total Posts: {total_posts}\nApproved: {total_approved}\nPending: {total_pending}\nDeclined: {total_declined}",
+            inline=False
+        )
+        
+        await interaction.followup.send(embed=embed, ephemeral=True)
     
-    async def _mymarketposts_callback(self, interaction: discord.Interaction):
+    @app_commands.command(name="my_posts", description="View your marketplace posts")
+    @app_commands.guild_only()
+    async def my_posts(self, interaction: discord.Interaction):
         """View your marketplace posts"""
         await interaction.response.defer(ephemeral=True)
         
+        # Get user's posts from the database
         guild_id = interaction.guild.id
         user_id = interaction.user.id
         
-        # Check if marketplace is set up
-        server_settings = await self.get_server_settings(guild_id)
-        if not server_settings:
-            return await interaction.followup.send("Marketplace hasn't been set up in this server. Please ask an admin to run `/setup_marketposts`.", ephemeral=True)
+        cursor = self.marketplace_posts.find({
+            "guild_id": guild_id,
+            "user_id": user_id
+        }).sort("created_at", -1)  # Sort by creation date, newest first
         
-        # Get user's posts
-        user_posts = []
-        async for post in self.marketplace_posts.find({"guild_id": guild_id, "user_id": user_id}).sort("created_at", -1).limit(10):
-            user_posts.append(post)
+        posts = []
+        async for post in cursor:
+            posts.append(post)
         
-        if not user_posts:
-            return await interaction.followup.send("You haven't made any marketplace posts in this server.", ephemeral=True)
+        if not posts:
+            return await interaction.followup.send("You haven't created any marketplace posts yet.", ephemeral=True)
         
-        # Create posts embed
-        posts_embed = discord.Embed(
+        # Create embed
+        embed = discord.Embed(
             title="Your Marketplace Posts",
-            description=f"Your recent marketplace posts in {interaction.guild.name}",
+            description=f"You have created {len(posts)} marketplace posts",
             color=discord.Color.blue(),
             timestamp=datetime.datetime.now()
         )
         
-        for post in user_posts:
+        # Add fields for each post (limit to most recent 10)
+        for post in posts[:10]:
             status_emoji = "🟢" if post["status"] == "approved" else "🟠" if post["status"] == "pending" else "🔴"
-            created_at = post["created_at"].strftime("%Y-%m-%d")
-            posts_embed.add_field(
+            post_date = post["created_at"].strftime("%Y-%m-%d")
+            
+            embed.add_field(
                 name=f"{status_emoji} {post['post_type']}: {post['title']}",
-                value=f"Status: {post['status'].capitalize()}\nCreated: {created_at}\nPrice: {post['price']}",
+                value=f"**Status:** {post['status'].capitalize()}\n**Posted:** {post_date}\n**Price:** {post['price']}",
                 inline=False
             )
         
-        posts_embed.set_footer(text=f"Showing {len(user_posts)} most recent posts", icon_url=interaction.user.display_avatar.url)
+        if len(posts) > 10:
+            embed.set_footer(text=f"Showing 10 most recent posts out of {len(posts)}")
         
-        await interaction.followup.send(embed=posts_embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
     
-    async def _clearmarketposts_callback(self, interaction: discord.Interaction, days: int = 30):
-        """Clear old marketplace posts"""
+    @app_commands.command(name="delete_post", description="Delete one of your marketplace posts")
+    @app_commands.guild_only()
+    async def delete_post(self, interaction: discord.Interaction, post_id: str):
+        """Delete one of your marketplace posts"""
         await interaction.response.defer(ephemeral=True)
         
-        # Check for admin permissions
-        if not interaction.user.guild_permissions.administrator:
-            return await interaction.followup.send("You need administrator permissions to clear marketplace posts.", ephemeral=True)
+        try:
+            # Validate ObjectId format
+            from bson.objectid import ObjectId
+            post_object_id = ObjectId(post_id)
+        except:
+            return await interaction.followup.send("Invalid post ID format.", ephemeral=True)
         
+        # Find the post
+        post = await self.marketplace_posts.find_one({"_id": post_object_id})
+        
+        if not post:
+            return await interaction.followup.send("Post not found.", ephemeral=True)
+        
+        # Check if the user is the owner of the post or an admin
+        is_admin = interaction.user.guild_permissions.administrator
+        is_owner = post["user_id"] == interaction.user.id
+        
+        if not (is_owner or is_admin):
+            return await interaction.followup.send("You don't have permission to delete this post.", ephemeral=True)
+        
+        # Confirm deletion with a button view
+        class ConfirmDeletionView(discord.ui.View):
+            def __init__(self, cog, post):
+                super().__init__(timeout=60)
+                self.cog = cog
+                self.post = post
+            
+            @discord.ui.button(label="Confirm Deletion", style=discord.ButtonStyle.red)
+            async def confirm(self, confirm_interaction: discord.Interaction, button: discord.ui.Button):
+                # Check if the user is the same
+                if confirm_interaction.user.id != interaction.user.id:
+                    return await confirm_interaction.response.send_message("This is not your confirmation dialog.", ephemeral=True)
+                
+                await confirm_interaction.response.defer(ephemeral=True)
+                
+                # Delete the post from the database
+                await self.cog.marketplace_posts.delete_one({"_id": self.post["_id"]})
+                
+                # If the post is approved, try to delete it from the marketplace channel
+                if self.post["status"] == "approved":
+                    try:
+                        # Get server settings
+                        server_settings = await self.cog.get_server_settings(interaction.guild.id)
+                        
+                        # Get appropriate channel based on post type
+                        channel_id = None
+                        if self.post["post_type"] == "Hiring":
+                            channel_id = server_settings.get("hiring_channel_id")
+                        elif self.post["post_type"] == "For-Hire":
+                            channel_id = server_settings.get("forhire_channel_id")
+                        elif self.post["post_type"] == "Selling":
+                            channel_id = server_settings.get("selling_channel_id")
+                        
+                        if channel_id:
+                            channel = interaction.guild.get_channel(channel_id)
+                            if channel and hasattr(self.post, "message_id"):
+                                try:
+                                    message = await channel.fetch_message(self.post["message_id"])
+                                    await message.delete()
+                                except:
+                                    pass  # Message may already be deleted
+                    except Exception as e:
+                        # Log error but continue
+                        print(f"Error deleting message for post {self.post['_id']}: {str(e)}")
+                
+                await confirm_interaction.followup.send("Post has been deleted.", ephemeral=True)
+                
+                # Update the original message
+                await interaction.edit_original_response(
+                    content="The post has been deleted.",
+                    view=None
+                )
+            
+            @discord.ui.button(label="Cancel", style=discord.ButtonStyle.gray)
+            async def cancel(self, cancel_interaction: discord.Interaction, button: discord.ui.Button):
+                # Check if the user is the same
+                if cancel_interaction.user.id != interaction.user.id:
+                    return await cancel_interaction.response.send_message("This is not your confirmation dialog.", ephemeral=True)
+                
+                await cancel_interaction.response.defer(ephemeral=True)
+                await interaction.edit_original_response(
+                    content="Post deletion cancelled.",
+                    view=None
+                )
+                
+                await cancel_interaction.followup.send("Post deletion cancelled.", ephemeral=True)
+        
+        # Create confirmation view
+        view = ConfirmDeletionView(self, post)
+        
+        # Send confirmation message
+        await interaction.followup.send(
+            f"Are you sure you want to delete the {post['post_type']} post titled **\"{post['title']}\"**?\n"
+            f"Status: {post['status'].capitalize()}\n"
+            f"This action cannot be undone.",
+            view=view,
+            ephemeral=True
+        )
+    
+    @app_commands.command(name="marketplace_help", description="Get help with the marketplace commands")
+    async def marketplace_help(self, interaction: discord.Interaction):
+        """Get help with the marketplace commands"""
+        embed = discord.Embed(
+            title="Marketplace Help",
+            description="Here are the commands available for the marketplace system:",
+            color=discord.Color.blue()
+        )
+        
+        embed.add_field(
+            name="`/post [type]`",
+            value="Create a new marketplace post. Types: Hiring, For-Hire, Selling",
+            inline=False
+        )
+        
+        embed.add_field(
+            name="`/my_posts`",
+            value="View all your marketplace posts",
+            inline=False
+        )
+        
+        embed.add_field(
+            name="`/delete_post [post_id]`",
+            value="Delete one of your marketplace posts",
+            inline=False
+        )
+        
+        embed.add_field(
+            name="`/marketplace_stats` (Admin)",
+            value="View statistics for all marketplace posts",
+            inline=False
+        )
+        
+        embed.add_field(
+            name="`/setup_marketposts` (Admin)",
+            value="Set up or update the marketplace system",
+            inline=False
+        )
+        
+        embed.add_field(
+            name="How It Works",
+            value=(
+                "1. Create a post with `/post`\n"
+                "2. Your post will be reviewed by moderators\n"
+                "3. If approved, it will be posted in the appropriate channel\n"
+                "4. You'll receive a DM notification about the approval/decline"
+            ),
+            inline=False
+        )
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+    
+    @delete_post.autocomplete('post_id')
+    async def post_id_autocomplete(self, interaction: discord.Interaction, current: str):
+        """Autocomplete for post IDs"""
         guild_id = interaction.guild.id
+        user_id = interaction.user.id
         
-        # Check if marketplace is set up
-        server_settings = await self.get_server_settings(guild_id)
-        if not server_settings:
-            return await interaction.followup.send("Marketplace hasn't been set up in this server. Please run `/setup_marketposts`.", ephemeral=True)
-        
-        # Calculate cutoff date
-        cutoff_date = datetime.datetime.now() - datetime.timedelta(days=days)
-        
-        # Delete old posts
-        delete_result = await self.marketplace_posts.delete_many({
+        # Get user's posts from the database
+        cursor = self.marketplace_posts.find({
             "guild_id": guild_id,
-            "created_at": {"$lt": cutoff_date}
-        })
+            "user_id": user_id
+        }).sort("created_at", -1).limit(25)  # Sort by creation date, newest first, limit to 25
         
-        deleted_count = delete_result.deleted_count
+        choices = []
+        async for post in cursor:
+            post_id = str(post["_id"])
+            post_title = post["title"]
+            post_type = post["post_type"]
+            post_status = post["status"]
+            
+            # Create a display name with type, status and title
+            display_name = f"{post_type} ({post_status}): {post_title[:20]}"
+            
+            # Filter based on current input (if any)
+            if not current or current.lower() in post_id.lower() or current.lower() in post_title.lower():
+                choices.append(app_commands.Choice(name=display_name, value=post_id))
         
-        await interaction.followup.send(f"Cleared {deleted_count} marketplace posts older than {days} days.", ephemeral=True)
+        return choices[:25]  # Discord limits to 25 choices
     
-    async def _reset_marketplace_callback(self, interaction: discord.Interaction):
-        """Reset marketplace settings"""
+    @app_commands.command(name="pending_approvals", description="View pending marketplace posts")
+    @app_commands.guild_only()
+    async def pending_approvals(self, interaction: discord.Interaction):
+        """View pending marketplace posts for moderators"""
         await interaction.response.defer(ephemeral=True)
         
-        # Check for admin permissions
-        if not interaction.user.guild_permissions.administrator:
-            return await interaction.followup.send("You need administrator permissions to reset marketplace settings.", ephemeral=True)
-        
+        # Get server settings
         guild_id = interaction.guild.id
+        server_settings = await self.get_server_settings(guild_id)
         
-        # Confirm reset
-        confirm_embed = discord.Embed(
-            title="Confirm Marketplace Reset",
-            description="Are you sure you want to reset all marketplace settings for this server? This action cannot be undone.",
-            color=discord.Color.red(),
+        if not server_settings:
+            return await interaction.followup.send("Marketplace hasn't been set up in this server.", ephemeral=True)
+        
+        # Check if user has appropriate role
+        approval_mod_roles_ids = server_settings.get("approval_mod_roles", [])
+        has_permission = False
+        
+        for role_id in approval_mod_roles_ids:
+            role = interaction.guild.get_role(role_id)
+            if role and role in interaction.user.roles:
+                has_permission = True
+                break
+        
+        if not has_permission:
+            return await interaction.followup.send("You don't have permission to view pending approvals.", ephemeral=True)
+        
+        # Get pending posts
+        cursor = self.marketplace_posts.find({
+            "guild_id": guild_id,
+            "status": "pending"
+        }).sort("created_at", 1)  # Sort by creation date, oldest first
+        
+        pending_posts = []
+        async for post in cursor:
+            pending_posts.append(post)
+        
+        if not pending_posts:
+            return await interaction.followup.send("There are no pending marketplace posts.", ephemeral=True)
+        
+        # Create embed
+        embed = discord.Embed(
+            title="Pending Marketplace Posts",
+            description=f"There are {len(pending_posts)} posts waiting for approval",
+            color=discord.Color.orange(),
             timestamp=datetime.datetime.now()
         )
         
-        # Create confirmation view
-        class ConfirmResetView(discord.ui.View):
-            def __init__(self, cog):
-                super().__init__(timeout=60)
-                self.cog = cog
-                self.value = None
+        # Add fields for each post (limit to 10)
+        for post in pending_posts[:10]:
+            post_date = post["created_at"].strftime("%Y-%m-%d %H:%M")
+            user = interaction.guild.get_member(post["user_id"])
+            user_mention = user.mention if user else f"Unknown User ({post['user_id']})"
             
-            @discord.ui.button(label="Confirm Reset", style=discord.ButtonStyle.danger)
-            async def confirm(self, button_interaction: discord.Interaction, button: discord.ui.Button):
-                if button_interaction.user.id != interaction.user.id:
-                    return await button_interaction.response.send_message("You can't use this button.", ephemeral=True)
-                
-                await button_interaction.response.defer(ephemeral=True)
-                
-                # Delete settings
-                await self.cog.marketplace_settings.delete_one({"guild_id": guild_id})
-                
-                # Optional: Delete all posts from this guild
-                await self.cog.marketplace_posts.delete_many({"guild_id": guild_id})
-                
-                self.value = True
-                self.stop()
-                
-                await interaction.followup.send("Marketplace settings have been reset. You can set up the marketplace again using `/setup_marketposts`.", ephemeral=True)
+            # Get approval channel
+            channel = interaction.guild.get_channel(post["channel_id"])
+            channel_link = f"[View Channel]({channel.jump_url})" if channel else "Channel Not Found"
             
-            @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
-            async def cancel(self, button_interaction: discord.Interaction, button: discord.ui.Button):
-                if button_interaction.user.id != interaction.user.id:
-                    return await button_interaction.response.send_message("You can't use this button.", ephemeral=True)
-                
-                await button_interaction.response.defer(ephemeral=True)
-                self.value = False
-                self.stop()
-                
-                await interaction.followup.send("Marketplace reset canceled.", ephemeral=True)
+            embed.add_field(
+                name=f"{post['post_type']}: {post['title']}",
+                value=f"**Submitted by:** {user_mention}\n**Posted:** {post_date}\n**Approval Channel:** {channel_link}",
+                inline=False
+            )
         
-        view = ConfirmResetView(self)
-        await interaction.followup.send(embed=confirm_embed, view=view, ephemeral=True)
+        if len(pending_posts) > 10:
+            embed.set_footer(text=f"Showing 10 oldest posts out of {len(pending_posts)}")
         
-        # Wait for confirmation
-        await view.wait()
-        if view.value is None:
-            await interaction.followup.send("Marketplace reset timed out.", ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @commands.Cog.listener()
+    async def on_message(self, message):
+        # Ignore bot messages
+        if message.author.bot:
+            return
+        
+        # Only process messages in marketplace channels
+        if not message.guild:
+            return
+        
+        # Get server settings
+        server_settings = await self.get_server_settings(message.guild.id)
+        if not server_settings:
+            return
+        
+        # Check if the message is in a marketplace channel
+        channel_id = message.channel.id
+        marketplace_channels = [
+            server_settings.get("hiring_channel_id"),
+            server_settings.get("forhire_channel_id"),
+            server_settings.get("selling_channel_id")
+        ]
+        
+        if channel_id not in marketplace_channels:
+            return
+        
+        # Check if user has moderator role
+        has_mod_role = False
+        mod_role_ids = server_settings.get("approval_mod_roles", [])
+        for role in message.author.roles:
+            if role.id in mod_role_ids:
+                has_mod_role = True
+                break
+        
+        # If not a moderator, delete the message and send a DM
+        if not has_mod_role:
+            try:
+                await message.delete()
+                
+                # Get channel type
+                channel_type = None
+                if channel_id == server_settings.get("hiring_channel_id"):
+                    channel_type = "Hiring"
+                elif channel_id == server_settings.get("forhire_channel_id"):
+                    channel_type = "For-Hire"
+                elif channel_id == server_settings.get("selling_channel_id"):
+                    channel_type = "Selling"
+                
+                # Send DM to the user
+                try:
+                    embed = discord.Embed(
+                        title="Message Removed",
+                        description="Your message in the marketplace channel was automatically removed.",
+                        color=discord.Color.orange()
+                    )
+                    
+                    embed.add_field(
+                        name="Why was my message removed?",
+                        value=f"The {channel_type} channel is only for approved marketplace posts. To create a post, use the `/post` command and select the appropriate type.",
+                        inline=False
+                    )
+                    
+                    await message.author.send(embed=embed)
+                except:
+                    # Unable to DM the user, just continue
+                    pass
+            except:
+                # Unable to delete the message, just continue
+                pass
 
 async def setup(bot):
     await bot.add_cog(Marketplace(bot))
