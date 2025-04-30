@@ -4,6 +4,7 @@ import os
 import aiohttp
 import asyncio
 from pymongo import MongoClient
+from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
 from datetime import datetime
 import json
 from typing import Dict, List, Optional
@@ -13,10 +14,22 @@ class AICog(commands.Cog):
     
     def __init__(self, bot):
         self.bot = bot
-        # Connection to MongoDB
-        self.mongo_client = MongoClient(os.getenv('MONGODB_URI'))
-        self.db = self.mongo_client['axis_bot_db']
-        self.conversations = self.db['conversations']
+        
+        # MongoDB connection with fallback
+        self.use_mongodb = True
+        try:
+            mongodb_uri = os.getenv('MONGODB_URI', 'mongodb://localhost:27017/axisbot')
+            self.mongo_client = MongoClient(mongodb_uri, serverSelectionTimeoutMS=5000)
+            # Test the connection
+            self.mongo_client.admin.command('ping')
+            self.db = self.mongo_client['axis_bot_db']
+            self.conversations = self.db['conversations']
+            print("MongoDB connection successful")
+        except (ConnectionFailure, ServerSelectionTimeoutError) as e:
+            print(f"MongoDB connection failed: {e}. Using in-memory storage instead.")
+            self.use_mongodb = False
+            # Fallback to in-memory storage
+            self.memory_storage = {}
         
         # API Key for Gemini
         self.gemini_api_key = os.getenv('GEMINI_API_KEY')
@@ -31,18 +44,41 @@ class AICog(commands.Cog):
         self.max_history_messages = 10
 
     async def save_conversation(self, user_id: int, channel_id: int, messages: List[Dict]):
-        """Save conversation to MongoDB"""
-        await self.conversations.update_one(
-            {"user_id": user_id, "channel_id": channel_id},
-            {"$set": {"messages": messages, "updated_at": datetime.utcnow()}},
-            upsert=True
-        )
+        """Save conversation to storage (MongoDB or memory)"""
+        if self.use_mongodb:
+            try:
+                await asyncio.to_thread(
+                    self.conversations.update_one,
+                    {"user_id": user_id, "channel_id": channel_id},
+                    {"$set": {"messages": messages, "updated_at": datetime.utcnow()}},
+                    upsert=True
+                )
+            except Exception as e:
+                print(f"Error saving to MongoDB: {e}. Using memory storage.")
+                self.use_mongodb = False
+                self.memory_storage[f"{user_id}-{channel_id}"] = messages
+        else:
+            # Use in-memory storage
+            self.memory_storage[f"{user_id}-{channel_id}"] = messages
 
     async def get_conversation(self, user_id: int, channel_id: int) -> List[Dict]:
-        """Retrieve conversation history from MongoDB"""
-        convo = await self.conversations.find_one({"user_id": user_id, "channel_id": channel_id})
-        if convo and "messages" in convo:
-            return convo["messages"]
+        """Retrieve conversation history from storage (MongoDB or memory)"""
+        if self.use_mongodb:
+            try:
+                convo = await asyncio.to_thread(
+                    self.conversations.find_one,
+                    {"user_id": user_id, "channel_id": channel_id}
+                )
+                if convo and "messages" in convo:
+                    return convo["messages"]
+            except Exception as e:
+                print(f"Error retrieving from MongoDB: {e}. Using memory storage.")
+                self.use_mongodb = False
+                return self.memory_storage.get(f"{user_id}-{channel_id}", [])
+        else:
+            # Use in-memory storage
+            return self.memory_storage.get(f"{user_id}-{channel_id}", [])
+        
         return []
 
     def trim_conversation(self, messages: List[Dict]) -> List[Dict]:
@@ -94,31 +130,34 @@ class AICog(commands.Cog):
         }
         
         # Make API request
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                self.api_endpoint,
-                json=payload,
-                headers={"Content-Type": "application/json"}
-            ) as response:
-                if response.status == 200:
-                    result = await response.json()
-                    
-                    # Extract response text from the result
-                    try:
-                        response_text = result.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
-                        if not response_text:
-                            return "I couldn't generate a response. Please try again."
-                        return response_text
-                    except (KeyError, IndexError):
-                        return "Error parsing the response from Gemini."
-                else:
-                    error_text = await response.text()
-                    try:
-                        error_json = json.loads(error_text)
-                        error_message = error_json.get("error", {}).get("message", "Unknown error")
-                        return f"Error: {error_message}"
-                    except:
-                        return f"Error: Status code {response.status}"
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    self.api_endpoint,
+                    json=payload,
+                    headers={"Content-Type": "application/json"}
+                ) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        
+                        # Extract response text from the result
+                        try:
+                            response_text = result.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+                            if not response_text:
+                                return "I couldn't generate a response. Please try again."
+                            return response_text
+                        except (KeyError, IndexError):
+                            return "Error parsing the response from Gemini."
+                    else:
+                        error_text = await response.text()
+                        try:
+                            error_json = json.loads(error_text)
+                            error_message = error_json.get("error", {}).get("message", "Unknown error")
+                            return f"Error: {error_message}"
+                        except:
+                            return f"Error: Status code {response.status}"
+        except Exception as e:
+            return f"Error connecting to Gemini API: {str(e)}"
 
     @commands.Cog.listener()
     async def on_message(self, message):
@@ -138,7 +177,11 @@ class AICog(commands.Cog):
                 return
             
             async with message.channel.typing():
-                await self.process_ai_query(message, query)
+                try:
+                    await self.process_ai_query(message, query)
+                except Exception as e:
+                    print(f"Error processing AI query: {e}")
+                    await message.channel.send(f"Sorry, I encountered an error: {str(e)}")
 
     async def process_ai_query(self, message, query):
         """Process an AI query and respond"""
@@ -194,7 +237,24 @@ class AICog(commands.Cog):
         user_id = ctx.author.id
         channel_id = ctx.channel.id
         
-        await self.conversations.delete_one({"user_id": user_id, "channel_id": channel_id})
+        if self.use_mongodb:
+            try:
+                await asyncio.to_thread(
+                    self.conversations.delete_one,
+                    {"user_id": user_id, "channel_id": channel_id}
+                )
+            except Exception as e:
+                print(f"Error clearing conversation in MongoDB: {e}")
+                self.use_mongodb = False
+                
+                # Remove from memory storage if we've switched to memory
+                if f"{user_id}-{channel_id}" in self.memory_storage:
+                    del self.memory_storage[f"{user_id}-{channel_id}"]
+        else:
+            # Remove from memory storage
+            if f"{user_id}-{channel_id}" in self.memory_storage:
+                del self.memory_storage[f"{user_id}-{channel_id}"]
+                
         await ctx.send("Your conversation history in this channel has been cleared.")
 
 async def setup(bot):
