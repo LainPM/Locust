@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 class AICog(commands.Cog):
-    """AI capabilities for Axis Discord bot using Gemini Flash"""
+    """AI capabilities for Axis Discord bot using Gemini API"""
     
     def __init__(self, bot):
         self.bot = bot
@@ -34,11 +34,33 @@ class AICog(commands.Cog):
         # API Key for Gemini
         self.gemini_api_key = os.getenv('GEMINI_API_KEY')
         
-        # Gemini Flash API endpoint
-        self.api_endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-flash:generateContent?key={self.gemini_api_key}"
+        # Gemini API model - using a valid model name
+        # Current valid models include gemini-1.0-pro, gemini-1.0-pro-001, gemini-2.0-flash, etc.
+        self.model_name = "gemini-1.0-pro"  # Fallback to most widely available model
+        
+        # Try to use newer models if available
+        try:
+            model_preference = ["gemini-2.0-flash", "gemini-1.5-flash-001", "gemini-1.0-pro"]
+            for model in model_preference:
+                if self.test_model(model):
+                    self.model_name = model
+                    print(f"AI Cog: Using {model} for Gemini API")
+                    break
+        except Exception as e:
+            print(f"AI Cog: Error testing models, using fallback model {self.model_name}: {e}")
+        
+        # Gemini API endpoint
+        self.api_endpoint = f"https://generativelanguage.googleapis.com/v1/models/{self.model_name}:generateContent?key={self.gemini_api_key}"
         
         # Maximum number of messages to keep in history
         self.max_history_messages = 10
+
+    def test_model(self, model_name):
+        """Test if a model is available (Note: This is a placeholder - in a real implementation,
+        you would make an async call to test if the model exists)"""
+        # In a real implementation, you would make a synchronous request to check model availability
+        # For now, we'll assume it exists
+        return True
 
     async def save_conversation(self, user_id: int, channel_id: int, messages: List[Dict]):
         """Save conversation to storage (MongoDB or memory)"""
@@ -82,7 +104,7 @@ class AICog(commands.Cog):
         return [system_message] + recent_messages
 
     async def query_gemini(self, messages: List[Dict]) -> str:
-        """Query Gemini Flash API"""
+        """Query Gemini API"""
         # Format messages for Gemini API
         gemini_messages = []
         
@@ -183,7 +205,7 @@ class AICog(commands.Cog):
         if not conversation:
             conversation = [{
                 "role": "system",
-                "content": "You are Axis, a helpful AI assistant for Discord powered by Gemini Flash. Be concise, friendly, and helpful."
+                "content": "You are Axis, a helpful AI assistant for Discord. Be concise, friendly, and helpful."
             }]
         
         # Add user message
@@ -240,6 +262,11 @@ class AICog(commands.Cog):
                 del self.memory_storage[f"{user_id}-{channel_id}"]
                 
         await ctx.send("Your conversation history in this channel has been cleared.")
+
+    @commands.command(name="ai-model")
+    async def show_model(self, ctx):
+        """Show which Gemini model is being used"""
+        await ctx.send(f"Currently using Gemini model: `{self.model_name}`")
 
 async def setup(bot):
     await bot.add_cog(AICog(bot))
