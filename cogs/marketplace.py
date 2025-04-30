@@ -63,13 +63,13 @@ class MarketPostModal(discord.ui.Modal):
         server_settings = await self.cog.get_server_settings(guild_id)
         
         if not server_settings:
-            return await interaction.followup.send("Marketplace hasn't been set up in this server. Please ask an admin to run `/setup marketposts`.", ephemeral=True)
+            return await interaction.followup.send("Marketplace hasn't been set up in this server. Please ask an admin to run `/setup_marketposts`.", ephemeral=True)
         
         approvals_category_id = server_settings.get("approvals_category_id")
         approvals_category = interaction.guild.get_channel(approvals_category_id)
         
         if not approvals_category:
-            return await interaction.followup.send("The approvals category could not be found. Please ask an admin to run `/setup marketposts`.", ephemeral=True)
+            return await interaction.followup.send("The approvals category could not be found. Please ask an admin to run `/setup_marketposts`.", ephemeral=True)
         
         # Check if image URL is valid (if provided)
         image_file = None
@@ -204,7 +204,7 @@ class PostApprovalView(discord.ui.View):
         server_settings = await self.cog.get_server_settings(guild_id)
         
         if not server_settings:
-            return await interaction.followup.send("Marketplace hasn't been set up in this server. Please run `/setup marketposts`.", ephemeral=True)
+            return await interaction.followup.send("Marketplace hasn't been set up in this server. Please run `/setup_marketposts`.", ephemeral=True)
         
         # Check if user has appropriate role
         approval_mod_roles_ids = server_settings.get("approval_mod_roles", [])
@@ -231,7 +231,7 @@ class PostApprovalView(discord.ui.View):
         marketplace_channel = interaction.guild.get_channel(marketplace_channel_id)
         
         if not marketplace_channel:
-            return await interaction.followup.send(f"The {self.post_data['post_type']} channel could not be found. Please run `/setup marketposts`.", ephemeral=True)
+            return await interaction.followup.send(f"The {self.post_data['post_type']} channel could not be found. Please run `/setup_marketposts`.", ephemeral=True)
         
         # Update post status in database
         await self.cog.marketplace_posts.update_one(
@@ -316,7 +316,7 @@ class PostApprovalView(discord.ui.View):
         server_settings = await self.cog.get_server_settings(guild_id)
         
         if not server_settings:
-            return await interaction.followup.send("Marketplace hasn't been set up in this server. Please run `/setup marketposts`.", ephemeral=True)
+            return await interaction.followup.send("Marketplace hasn't been set up in this server. Please run `/setup_marketposts`.", ephemeral=True)
         
         # Check if user has appropriate role
         approval_mod_roles_ids = server_settings.get("approval_mod_roles", [])
@@ -404,139 +404,6 @@ class DeclineReasonModal(discord.ui.Modal):
         
         # Schedule approval channel for deletion (in 24 hours)
         await self.cog.schedule_channel_deletion(interaction.channel.id, 24)
-
-class SetupMarketModal(discord.ui.Modal):
-    def __init__(self, cog):
-        super().__init__(title="Marketplace Setup")
-        self.cog = cog
-        
-        self.hiring_channel = discord.ui.TextInput(
-            label="Hiring Channel ID",
-            placeholder="Channel ID for hiring posts",
-            required=True
-        )
-        self.add_item(self.hiring_channel)
-        
-        self.forhire_channel = discord.ui.TextInput(
-            label="For-Hire Channel ID",
-            placeholder="Channel ID for for-hire posts",
-            required=True
-        )
-        self.add_item(self.forhire_channel)
-        
-        self.selling_channel = discord.ui.TextInput(
-            label="Selling Channel ID", 
-            placeholder="Channel ID for selling posts",
-            required=True
-        )
-        self.add_item(self.selling_channel)
-        
-        self.approvals_category = discord.ui.TextInput(
-            label="Approvals Category ID",
-            placeholder="Category ID for approval channels",
-            required=True
-        )
-        self.add_item(self.approvals_category)
-        
-        self.approval_roles = discord.ui.TextInput(
-            label="Role IDs (comma separated)",
-            placeholder="Approval role IDs (view, mod) separated by commas",
-            required=True
-        )
-        self.add_item(self.approval_roles)
-    
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        
-        # Parse channel IDs
-        try:
-            hiring_channel_id = int(self.hiring_channel.value.strip())
-            forhire_channel_id = int(self.forhire_channel.value.strip())
-            selling_channel_id = int(self.selling_channel.value.strip())
-            approvals_category_id = int(self.approvals_category.value.strip())
-        except ValueError:
-            return await interaction.followup.send("Invalid channel or category ID. Please provide valid IDs.", ephemeral=True)
-        
-        # Parse role IDs
-        role_ids = self.approval_roles.value.replace(" ", "").split(",")
-        if len(role_ids) < 2:
-            return await interaction.followup.send("Please provide at least two role IDs: one for viewing approvals and one for moderating.", ephemeral=True)
-        
-        # First role ID is for viewing, rest are for moderating
-        view_role_id = role_ids[0]
-        mod_role_ids = role_ids[1:]
-        
-        try:
-            view_role_id = int(view_role_id)
-            mod_role_ids = [int(role_id) for role_id in mod_role_ids]
-        except ValueError:
-            return await interaction.followup.send("Invalid role ID format. Please provide valid role IDs.", ephemeral=True)
-        
-        # Verify channels and roles exist
-        hiring_channel = interaction.guild.get_channel(hiring_channel_id)
-        forhire_channel = interaction.guild.get_channel(forhire_channel_id)
-        selling_channel = interaction.guild.get_channel(selling_channel_id)
-        approvals_category = interaction.guild.get_channel(approvals_category_id)
-        
-        if not all([hiring_channel, forhire_channel, selling_channel]):
-            return await interaction.followup.send("One or more marketplace channels could not be found. Please check the IDs.", ephemeral=True)
-        
-        if not approvals_category or not isinstance(approvals_category, discord.CategoryChannel):
-            return await interaction.followup.send("The approvals category could not be found or is not a category. Please check the ID.", ephemeral=True)
-        
-        view_role = interaction.guild.get_role(view_role_id)
-        if not view_role:
-            return await interaction.followup.send(f"The approval viewing role (ID: {view_role_id}) could not be found.", ephemeral=True)
-        
-        mod_roles = []
-        for role_id in mod_role_ids:
-            role = interaction.guild.get_role(role_id)
-            if role:
-                mod_roles.append(role)
-            else:
-                return await interaction.followup.send(f"An approval moderator role (ID: {role_id}) could not be found.", ephemeral=True)
-        
-        # Save settings to database
-        guild_id = interaction.guild.id
-        
-        settings = {
-            "guild_id": guild_id,
-            "hiring_channel_id": hiring_channel_id,
-            "forhire_channel_id": forhire_channel_id,
-            "selling_channel_id": selling_channel_id,
-            "approvals_category_id": approvals_category_id,
-            "approval_view_roles": [view_role_id],
-            "approval_mod_roles": mod_role_ids,
-            "updated_at": datetime.datetime.now()
-        }
-        
-        # Update or insert settings
-        await self.cog.marketplace_settings.update_one(
-            {"guild_id": guild_id},
-            {"$set": settings},
-            upsert=True
-        )
-        
-        # Confirmation message
-        embed = discord.Embed(
-            title="Marketplace Setup Complete",
-            description="The marketplace system has been configured successfully.",
-            color=discord.Color.green(),
-            timestamp=datetime.datetime.now()
-        )
-        
-        embed.add_field(name="Hiring Channel", value=hiring_channel.mention, inline=True)
-        embed.add_field(name="For-Hire Channel", value=forhire_channel.mention, inline=True)
-        embed.add_field(name="Selling Channel", value=selling_channel.mention, inline=True)
-        embed.add_field(name="Approvals Category", value=approvals_category.mention, inline=False)
-        
-        view_roles_text = ", ".join([view_role.mention])
-        mod_roles_text = ", ".join([role.mention for role in mod_roles])
-        
-        embed.add_field(name="Approval Viewing Roles", value=view_roles_text, inline=False)
-        embed.add_field(name="Approval Moderator Roles", value=mod_roles_text, inline=False)
-        
-        await interaction.followup.send(embed=embed, ephemeral=True)
 
 class Marketplace(commands.Cog):
     def __init__(self, bot):
@@ -638,18 +505,100 @@ class Marketplace(commands.Cog):
     @app_commands.command(name="setup_marketposts", description="Set up the marketplace system")
     @app_commands.guild_only()
     @app_commands.default_permissions(administrator=True)
-    async def setup_marketposts(self, interaction: discord.Interaction):
-        """Set up the marketplace system"""
+    async def setup_marketposts(
+        self,
+        interaction: discord.Interaction,
+        hiring_channel: discord.TextChannel, 
+        forhire_channel: discord.TextChannel,
+        selling_channel: discord.TextChannel,
+        approvals_category: discord.CategoryChannel,
+        view_role: discord.Role,
+        mod_role1: discord.Role,
+        mod_role2: Optional[discord.Role] = None,
+        mod_role3: Optional[discord.Role] = None,
+        mod_role4: Optional[discord.Role] = None,
+        mod_role5: Optional[discord.Role] = None
+    ):
+        """Set up the marketplace system with channel and role mentions"""
+        await interaction.response.defer(ephemeral=True)
+        
         # Check for admin permissions
         if not interaction.user.guild_permissions.administrator:
-            return await interaction.response.send_message("You need administrator permissions to set up the marketplace.", ephemeral=True)
+            return await interaction.followup.send("You need administrator permissions to set up the marketplace.", ephemeral=True)
         
-        # Open the setup modal
-        modal = SetupMarketModal(self)
-        await interaction.response.send_modal(modal)
+        # Collect the channel IDs
+        hiring_channel_id = hiring_channel.id
+        forhire_channel_id = forhire_channel.id
+        selling_channel_id = selling_channel.id
+        approvals_category_id = approvals_category.id
+        
+        # Collect the role IDs
+        view_role_id = view_role.id
+        mod_role_ids = [mod_role1.id]
+        
+        # Add optional moderator roles if provided
+        if mod_role2:
+            mod_role_ids.append(mod_role2.id)
+        if mod_role3:
+            mod_role_ids.append(mod_role3.id)
+        if mod_role4:
+            mod_role_ids.append(mod_role4.id)
+        if mod_role5:
+            mod_role_ids.append(mod_role5.id)
+        
+        # Save settings to database
+        guild_id = interaction.guild.id
+        
+        settings = {
+            "guild_id": guild_id,
+            "hiring_channel_id": hiring_channel_id,
+            "forhire_channel_id": forhire_channel_id,
+            "selling_channel_id": selling_channel_id,
+            "approvals_category_id": approvals_category_id,
+            "approval_view_roles": [view_role_id],
+            "approval_mod_roles": mod_role_ids,
+            "updated_at": datetime.datetime.now()
+        }
+        
+        # Update or insert settings
+        await self.marketplace_settings.update_one(
+            {"guild_id": guild_id},
+            {"$set": settings},
+            upsert=True
+        )
+        
+        # Collect the role mentions for the confirmation message
+        mod_roles = [mod_role1]
+        if mod_role2:
+            mod_roles.append(mod_role2)
+        if mod_role3:
+            mod_roles.append(mod_role3)
+        if mod_role4:
+            mod_roles.append(mod_role4)
+        if mod_role5:
+            mod_roles.append(mod_role5)
+        
+        # Confirmation message
+        embed = discord.Embed(
+            title="Marketplace Setup Complete",
+            description="The marketplace system has been configured successfully.",
+            color=discord.Color.green(),
+            timestamp=datetime.datetime.now()
+        )
+        
+        embed.add_field(name="Hiring Channel", value=hiring_channel.mention, inline=True)
+        embed.add_field(name="For-Hire Channel", value=forhire_channel.mention, inline=True)
+        embed.add_field(name="Selling Channel", value=selling_channel.mention, inline=True)
+        embed.add_field(name="Approvals Category", value=approvals_category.mention, inline=False)
+        
+        view_roles_text = view_role.mention
+        mod_roles_text = " ".join([role.mention for role in mod_roles])
+        
+        embed.add_field(name="Approval Viewing Role", value=view_roles_text, inline=False)
+        embed.add_field(name="Approval Moderator Roles", value=mod_roles_text, inline=False)
+        
+        await interaction.followup.send(embed=embed, ephemeral=True)
     
-    # cogs/marketplace.py (continued)
-    # cogs/marketplace.py (continued)
     @app_commands.command(name="marketplace_stats", description="View marketplace statistics")
     @app_commands.guild_only()
     @app_commands.default_permissions(administrator=True)
