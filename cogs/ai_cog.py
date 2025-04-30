@@ -3,10 +3,8 @@ from discord.ext import commands
 import os
 import aiohttp
 import asyncio
-from pymongo import MongoClient
-from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
-from datetime import datetime
 import json
+from datetime import datetime
 from typing import Dict, List, Optional
 
 class AICog(commands.Cog):
@@ -15,21 +13,23 @@ class AICog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         
-        # MongoDB connection with fallback
-        self.use_mongodb = True
-        try:
-            mongodb_uri = os.getenv('MONGODB_URI', 'mongodb://localhost:27017/axisbot')
-            self.mongo_client = MongoClient(mongodb_uri, serverSelectionTimeoutMS=5000)
-            # Test the connection
-            self.mongo_client.admin.command('ping')
-            self.db = self.mongo_client['axis_bot_db']
-            self.conversations = self.db['conversations']
-            print("MongoDB connection successful")
-        except (ConnectionFailure, ServerSelectionTimeoutError) as e:
-            print(f"MongoDB connection failed: {e}. Using in-memory storage instead.")
-            self.use_mongodb = False
-            # Fallback to in-memory storage
-            self.memory_storage = {}
+        # Use the bot's existing MongoDB connection
+        self.db = None
+        self.conversations = None
+        
+        # Set up MongoDB collections if bot has MongoDB
+        if hasattr(bot, 'mongo_client') and bot.mongo_client is not None:
+            try:
+                self.db = bot.db
+                # Create a conversations collection in the existing database
+                self.conversations = self.db.conversations
+                print("AI Cog: Successfully connected to MongoDB")
+            except Exception as e:
+                print(f"AI Cog: Error connecting to MongoDB: {e}")
+                self.db = None
+        
+        # In-memory storage fallback
+        self.memory_storage = {}
         
         # API Key for Gemini
         self.gemini_api_key = os.getenv('GEMINI_API_KEY')
@@ -37,49 +37,37 @@ class AICog(commands.Cog):
         # Gemini Flash API endpoint
         self.api_endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-flash:generateContent?key={self.gemini_api_key}"
         
-        # Maximum context size (tokens) for Gemini Flash
-        self.max_context_size = 8192  # Adjust based on actual model specs
-        
         # Maximum number of messages to keep in history
         self.max_history_messages = 10
 
     async def save_conversation(self, user_id: int, channel_id: int, messages: List[Dict]):
         """Save conversation to storage (MongoDB or memory)"""
-        if self.use_mongodb:
+        if self.conversations is not None:
             try:
-                await asyncio.to_thread(
-                    self.conversations.update_one,
+                await self.conversations.update_one(
                     {"user_id": user_id, "channel_id": channel_id},
                     {"$set": {"messages": messages, "updated_at": datetime.utcnow()}},
                     upsert=True
                 )
+                return
             except Exception as e:
-                print(f"Error saving to MongoDB: {e}. Using memory storage.")
-                self.use_mongodb = False
-                self.memory_storage[f"{user_id}-{channel_id}"] = messages
-        else:
-            # Use in-memory storage
-            self.memory_storage[f"{user_id}-{channel_id}"] = messages
+                print(f"AI Cog: Error saving to MongoDB: {e}")
+        
+        # Use in-memory storage as fallback
+        self.memory_storage[f"{user_id}-{channel_id}"] = messages
 
     async def get_conversation(self, user_id: int, channel_id: int) -> List[Dict]:
         """Retrieve conversation history from storage (MongoDB or memory)"""
-        if self.use_mongodb:
+        if self.conversations is not None:
             try:
-                convo = await asyncio.to_thread(
-                    self.conversations.find_one,
-                    {"user_id": user_id, "channel_id": channel_id}
-                )
+                convo = await self.conversations.find_one({"user_id": user_id, "channel_id": channel_id})
                 if convo and "messages" in convo:
                     return convo["messages"]
             except Exception as e:
-                print(f"Error retrieving from MongoDB: {e}. Using memory storage.")
-                self.use_mongodb = False
-                return self.memory_storage.get(f"{user_id}-{channel_id}", [])
-        else:
-            # Use in-memory storage
-            return self.memory_storage.get(f"{user_id}-{channel_id}", [])
+                print(f"AI Cog: Error retrieving from MongoDB: {e}")
         
-        return []
+        # Use in-memory storage as fallback
+        return self.memory_storage.get(f"{user_id}-{channel_id}", [])
 
     def trim_conversation(self, messages: List[Dict]) -> List[Dict]:
         """Trim conversation to fit within limits"""
@@ -180,7 +168,7 @@ class AICog(commands.Cog):
                 try:
                     await self.process_ai_query(message, query)
                 except Exception as e:
-                    print(f"Error processing AI query: {e}")
+                    print(f"AI Cog: Error processing AI query: {e}")
                     await message.channel.send(f"Sorry, I encountered an error: {str(e)}")
 
     async def process_ai_query(self, message, query):
@@ -237,15 +225,11 @@ class AICog(commands.Cog):
         user_id = ctx.author.id
         channel_id = ctx.channel.id
         
-        if self.use_mongodb:
+        if self.conversations is not None:
             try:
-                await asyncio.to_thread(
-                    self.conversations.delete_one,
-                    {"user_id": user_id, "channel_id": channel_id}
-                )
+                await self.conversations.delete_one({"user_id": user_id, "channel_id": channel_id})
             except Exception as e:
-                print(f"Error clearing conversation in MongoDB: {e}")
-                self.use_mongodb = False
+                print(f"AI Cog: Error clearing conversation in MongoDB: {e}")
                 
                 # Remove from memory storage if we've switched to memory
                 if f"{user_id}-{channel_id}" in self.memory_storage:
