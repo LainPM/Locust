@@ -165,7 +165,8 @@ class MarketPostModal(discord.ui.Modal):
             "created_at": datetime.datetime.now()
         }
         
-        await self.cog.marketplace_posts.insert_one(post_data)
+        post_result = await self.cog.marketplace_posts.insert_one(post_data)
+        post_data["_id"] = post_result.inserted_id  # Add the ID to post_data
         
         # Create approval buttons
         view = PostApprovalView(self.cog, post_data)
@@ -275,6 +276,12 @@ class PostApprovalView(discord.ui.View):
                 embed=post_embed
             )
             
+            # Save the message ID in the database for potential deletion later
+            await self.cog.marketplace_posts.update_one(
+                {"_id": self.post_data["_id"]},
+                {"$set": {"message_id": marketplace_message.id}}
+            )
+            
             # Update approval message
             await interaction.message.edit(
                 content=f"**{self.post_data['post_type']} Post Approved**\nApproved by: {interaction.user.mention}\nPosted in: {marketplace_channel.mention}",
@@ -301,8 +308,8 @@ class PostApprovalView(discord.ui.View):
                 except Exception as e:
                     await interaction.followup.send(f"Note: Error sending DM to post author: {str(e)}", ephemeral=True)
             
-            # Schedule approval channel for deletion (in 24 hours)
-            await self.cog.schedule_channel_deletion(interaction.channel.id, 24)
+            # Schedule approval channel for deletion (in 1 minute)
+            await self.cog.schedule_channel_deletion(interaction.channel.id, 0.016)  # 0.016 hours = 1 minute
             
         except Exception as e:
             await interaction.followup.send(f"An error occurred: {str(e)}", ephemeral=True)
@@ -331,9 +338,46 @@ class PostApprovalView(discord.ui.View):
         if not has_permission:
             return await interaction.followup.send("You don't have permission to decline marketplace posts.", ephemeral=True)
         
-        # Request reason for declining
-        modal = DeclineReasonModal(self.cog, self.post_data)
-        await interaction.response.send_modal(modal)
+        # Create decline reason prompt
+        class DeclinePrompt(discord.ui.View):
+            def __init__(self, cog, post_data):
+                super().__init__(timeout=300)  # 5 minute timeout
+                self.cog = cog
+                self.post_data = post_data
+                self.reason = None
+                
+                # Add a text input for the reason
+                self.reason_input = discord.ui.TextInput(
+                    label="Reason for declining",
+                    placeholder="Please provide a reason for declining this post",
+                    required=True,
+                    style=discord.TextStyle.paragraph,
+                    max_length=1000
+                )
+            
+            @discord.ui.button(label="Submit Reason", style=discord.ButtonStyle.red)
+            async def submit_button(self, button_interaction: discord.Interaction, button: discord.ui.Button):
+                # Show a modal for the reason input
+                modal = DeclineReasonModal(self.cog, self.post_data)
+                await button_interaction.response.send_modal(modal)
+            
+            @discord.ui.button(label="Cancel", style=discord.ButtonStyle.gray)
+            async def cancel_button(self, cancel_interaction: discord.Interaction, button: discord.ui.Button):
+                if cancel_interaction.user.id != interaction.user.id:
+                    return await cancel_interaction.response.send_message("This is not your action to cancel.", ephemeral=True)
+                
+                await cancel_interaction.response.defer()
+                await interaction.edit_original_response(
+                    content="Post decline cancelled.",
+                    view=None
+                )
+        
+        # Send the decline reason prompt
+        await interaction.followup.send(
+            content=f"Please click **Submit Reason** to provide a reason for declining this post.",
+            view=DeclinePrompt(self.cog, self.post_data),
+            ephemeral=True
+        )
     
     def get_color_for_post_type(self, post_type):
         if post_type == "Hiring":
@@ -374,11 +418,21 @@ class DeclineReasonModal(discord.ui.Modal):
             }}
         )
         
-        # Update approval message
-        await interaction.message.edit(
-            content=f"**{self.post_data['post_type']} Post Declined**\nDeclined by: {interaction.user.mention}\nReason: {self.reason_input.value}",
-            view=None
-        )
+        # Get the message to update
+        try:
+            channel = interaction.guild.get_channel(self.post_data["channel_id"])
+            if channel:
+                # Find the original message with the buttons (first message in the channel)
+                async for message in channel.history(limit=5):
+                    if message.author == interaction.guild.me and len(message.components) > 0:
+                        # Found the message with buttons, update it
+                        await message.edit(
+                            content=f"**{self.post_data['post_type']} Post Declined**\nDeclined by: {interaction.user.mention}\nReason: {self.reason_input.value}",
+                            view=None
+                        )
+                        break
+        except Exception as e:
+            print(f"Error finding approval message: {str(e)}")
         
         await interaction.followup.send("Post declined.", ephemeral=True)
         
@@ -402,8 +456,8 @@ class DeclineReasonModal(discord.ui.Modal):
             except Exception as e:
                 await interaction.followup.send(f"Note: Error sending DM to post author: {str(e)}", ephemeral=True)
         
-        # Schedule approval channel for deletion (in 24 hours)
-        await self.cog.schedule_channel_deletion(interaction.channel.id, 24)
+        # Schedule approval channel for deletion (in 1 minute)
+        await self.cog.schedule_channel_deletion(self.post_data["channel_id"], 0.016)  # 0.016 hours = 1 minute
 
 class Marketplace(commands.Cog):
     def __init__(self, bot):
@@ -413,7 +467,7 @@ class Marketplace(commands.Cog):
         self.marketplace_posts = bot.db["marketplace_posts"]
         self.scheduled_deletions = bot.db["scheduled_deletions"]
         
-        # Start the deletion task
+        # Start the deletion task and make it check every 30 seconds instead of every hour
         self.deletion_task = self.bot.loop.create_task(self.check_scheduled_deletions())
     
     def cog_unload(self):
@@ -439,25 +493,27 @@ class Marketplace(commands.Cog):
                         if channel:
                             try:
                                 await channel.delete(reason="Marketplace post processed")
+                                print(f"Deleted channel {channel_id} from guild {guild_id}")
                             except discord.Forbidden:
                                 print(f"Could not delete channel {channel_id}: Missing permissions")
                             except discord.NotFound:
                                 # Channel already deleted
-                                pass
+                                print(f"Channel {channel_id} already deleted")
                             except Exception as e:
                                 print(f"Error deleting channel {channel_id}: {str(e)}")
                     
                     # Remove from scheduled deletions
                     await self.scheduled_deletions.delete_one({"_id": scheduled["_id"]})
                 
-                # Check every hour
-                await asyncio.sleep(3600)
+                # Check every 30 seconds instead of every hour
+                await asyncio.sleep(30)
             except asyncio.CancelledError:
                 # Task was cancelled
                 break
             except Exception as e:
                 print(f"Error in deletion task: {str(e)}")
-                await asyncio.sleep(3600)  # Still wait before retrying
+                # Still wait before retrying, but shorter period
+                await asyncio.sleep(30)
     
     async def schedule_channel_deletion(self, channel_id, hours=24):
         """Schedule a channel for deletion after a specified number of hours"""
@@ -474,6 +530,7 @@ class Marketplace(commands.Cog):
             "deletion_time": deletion_time
         })
         
+        print(f"Scheduled channel {channel_id} for deletion at {deletion_time}")
         return True
     
     async def get_server_settings(self, guild_id):
@@ -786,7 +843,7 @@ class Marketplace(commands.Cog):
                         
                         if channel_id:
                             channel = interaction.guild.get_channel(channel_id)
-                            if channel and hasattr(self.post, "message_id"):
+                            if channel and "message_id" in self.post:
                                 try:
                                     message = await channel.fetch_message(self.post["message_id"])
                                     await message.delete()
