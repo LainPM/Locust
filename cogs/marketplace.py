@@ -649,6 +649,7 @@ class Marketplace(commands.Cog):
         await interaction.response.send_modal(modal)
     
     # cogs/marketplace.py (continued)
+    # cogs/marketplace.py (continued)
     @app_commands.command(name="marketplace_stats", description="View marketplace statistics")
     @app_commands.guild_only()
     @app_commands.default_permissions(administrator=True)
