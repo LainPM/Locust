@@ -22,7 +22,7 @@ class Starboard(commands.Cog):
             self.reaction_task.cancel()
     
     async def check_reactions(self):
-        """Task to periodically check for posts that have crossed the reaction threshold"""
+        """Task to periodically check for posts that have crossed the reaction threshold and clean up deleted messages"""
         await self.bot.wait_until_ready()
         while not self.bot.is_closed():
             try:
@@ -57,6 +57,8 @@ class Starboard(commands.Cog):
                         # Try to get the original message
                         channel = guild.get_channel(post["channel_id"])
                         if not channel:
+                            # Channel was deleted, remove post from database
+                            await self.starboard_posts.delete_one({"_id": post["_id"]})
                             continue
                             
                         try:
@@ -121,6 +123,16 @@ class Starboard(commands.Cog):
                     # Try to get the original message
                     channel = guild.get_channel(post["channel_id"])
                     if not channel:
+                        # Channel was deleted
+                        await self.starboard_posts.delete_one({"_id": post["_id"]})
+                        
+                        # Try to delete the featured message too
+                        if post.get("featured_message_id"):
+                            try:
+                                featured_message = await featured_channel.fetch_message(post["featured_message_id"])
+                                await featured_message.delete()
+                            except:
+                                pass
                         continue
                         
                     try:
@@ -172,7 +184,56 @@ class Starboard(commands.Cog):
                         # Original message was deleted or can't be accessed
                         # Remove from database
                         await self.starboard_posts.delete_one({"_id": post["_id"]})
+                        
+                        # Try to delete the featured message too
+                        if post.get("featured_message_id"):
+                            try:
+                                featured_message = await featured_channel.fetch_message(post["featured_message_id"])
+                                await featured_message.delete()
+                            except:
+                                pass
                         continue
+                
+                # Additional cleanup: Check all posts in database to make sure their messages still exist
+                async for post in self.starboard_posts.find():
+                    guild_id = post["guild_id"]
+                    guild = self.bot.get_guild(guild_id)
+                    
+                    if not guild:
+                        continue
+                    
+                    channel = guild.get_channel(post["channel_id"])
+                    if not channel:
+                        # Channel no longer exists, delete the post
+                        await self.starboard_posts.delete_one({"_id": post["_id"]})
+                        continue
+                    
+                    try:
+                        message = await channel.fetch_message(post["message_id"])
+                    except (discord.NotFound, discord.Forbidden):
+                        # Message no longer exists, delete the post
+                        await self.starboard_posts.delete_one({"_id": post["_id"]})
+                        
+                        # If it was featured, try to delete the featured message too
+                        if post.get("featured", False) and post.get("featured_message_id"):
+                            # Get server settings
+                            server_settings = await self.starboard_settings.find_one({"guild_id": guild_id})
+                            if not server_settings:
+                                continue
+                            
+                            featured_channel_id = server_settings.get("featured_channel_id")
+                            if not featured_channel_id:
+                                continue
+                            
+                            featured_channel = guild.get_channel(featured_channel_id)
+                            if not featured_channel:
+                                continue
+                            
+                            try:
+                                featured_message = await featured_channel.fetch_message(post["featured_message_id"])
+                                await featured_message.delete()
+                            except:
+                                pass
                 
                 # Check every 30 seconds
                 await asyncio.sleep(30)
@@ -220,6 +281,45 @@ class Starboard(commands.Cog):
         return embed
     
     @commands.Cog.listener()
+    async def on_raw_message_delete(self, payload):
+        """Handle message deletion in showcase channels"""
+        # Check if message was in a database
+        post = await self.starboard_posts.find_one({
+            "guild_id": payload.guild_id,
+            "channel_id": payload.channel_id,
+            "message_id": payload.message_id
+        })
+        
+        if post:
+            # Delete from database
+            await self.starboard_posts.delete_one({"_id": post["_id"]})
+            
+            # If message was featured, try to delete the featured message too
+            if post.get("featured", False) and post.get("featured_message_id"):
+                # Get server settings
+                server_settings = await self.starboard_settings.find_one({"guild_id": payload.guild_id})
+                if not server_settings:
+                    return
+                
+                # Get the featured channel
+                featured_channel_id = server_settings.get("featured_channel_id")
+                if not featured_channel_id:
+                    return
+                
+                guild = self.bot.get_guild(payload.guild_id)
+                if not guild:
+                    return
+                
+                featured_channel = guild.get_channel(featured_channel_id)
+                if not featured_channel:
+                    return
+                
+                # Try to delete the featured message
+                try:
+                    featured_message = await featured_channel.fetch_message(post["featured_message_id"])
+                    await featured_message.delete()
+                except (discord.NotFound, discord.Forbidden):
+                    pass  # Message already deleted or can't delete
     async def on_raw_reaction_add(self, payload):
         """Handle reaction being added to messages"""
         # Ignore bot reactions
@@ -423,7 +523,46 @@ class Starboard(commands.Cog):
             )
     
     @commands.Cog.listener()
-    async def on_message(self, message):
+    async def on_raw_bulk_message_delete(self, payload):
+        """Handle bulk message deletion in showcase channels"""
+        # Check each message ID to see if it was in the database
+        for message_id in payload.message_ids:
+            post = await self.starboard_posts.find_one({
+                "guild_id": payload.guild_id,
+                "channel_id": payload.channel_id,
+                "message_id": message_id
+            })
+            
+            if post:
+                # Delete from database
+                await self.starboard_posts.delete_one({"_id": post["_id"]})
+                
+                # If message was featured, try to delete the featured message too
+                if post.get("featured", False) and post.get("featured_message_id"):
+                    # Get server settings
+                    server_settings = await self.starboard_settings.find_one({"guild_id": payload.guild_id})
+                    if not server_settings:
+                        continue
+                    
+                    # Get the featured channel
+                    featured_channel_id = server_settings.get("featured_channel_id")
+                    if not featured_channel_id:
+                        continue
+                    
+                    guild = self.bot.get_guild(payload.guild_id)
+                    if not guild:
+                        continue
+                    
+                    featured_channel = guild.get_channel(featured_channel_id)
+                    if not featured_channel:
+                        continue
+                    
+                    # Try to delete the featured message
+                    try:
+                        featured_message = await featured_channel.fetch_message(post["featured_message_id"])
+                        await featured_message.delete()
+                    except (discord.NotFound, discord.Forbidden):
+                        pass  # Message already deleted or can't delete(self, message):
         """Handle new messages in showcase channels"""
         # Ignore bot messages
         if message.author.bot:
