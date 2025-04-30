@@ -16,6 +16,7 @@ class MyBot(commands.Bot):
     def __init__(self):
         # Fix: Set a valid command prefix
         super().__init__(command_prefix="!", intents=intents)
+        
         # Initialize MongoDB connection
         self.mongo_client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URI)
         self.db = self.mongo_client["discord_bot"]
@@ -34,7 +35,7 @@ class MyBot(commands.Bot):
                     print(f"Failed to load extension {filename}: {e}")
                     
         print("Cogs loaded successfully.")
-
+        
     # Override to disable text command processing but still allow on_message events
     async def process_commands(self, message):
         # Skip processing text commands completely
@@ -53,21 +54,15 @@ async def on_ready():
         synced = await bot.tree.sync()
         print(f"Synced {len(synced)} command(s) globally")
         
+        # Optional: You can also sync guild-specific commands if needed
+        # This allows for testing commands in a specific server before rolling out globally
+        # Replace YOUR_GUILD_ID with your actual guild/server ID
+        # guild = discord.Object(id=YOUR_GUILD_ID)
+        # guild_synced = await bot.tree.sync(guild=guild)
+        # print(f"Synced {len(guild_synced)} command(s) to test guild")
+        
     except Exception as e:
         print(f"Failed to sync commands: {e}")
-
-# Add message listener to respond to "hi"
-#@bot.event
-#async def on_message(message):
-    # Ignore messages from the bot itself to prevent potential loops
-#    if message.author == bot.user:
-        return
-    
-    # Check if message content is "hi" (case insensitive)
-#    if message.content.lower() in ["hi", "hello", "hey"]:
-#        await message.channel.send(f"Hi {message.author.mention}! How can I help you today?")
-    
-    # Don't call process_commands since we've disabled it
 
 if __name__ == "__main__":
     bot.run(os.getenv("DISCORD_TOKEN").strip())
