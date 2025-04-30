@@ -40,10 +40,13 @@ class MyBot(commands.Bot):
                     
         print("Cogs loaded successfully.")
         
-    # Override to disable text command processing but still allow on_message events
+    # IMPORTANT FIX: Modified to process commands properly while allowing on_message events 
     async def process_commands(self, message):
-        # Skip processing text commands completely
-        return
+        # Only process commands if message starts with prefix
+        if message.content.startswith(self.command_prefix):
+            ctx = await self.get_context(message)
+            if ctx.command is not None:
+                await self.invoke(ctx)
     
     async def on_command_error(self, ctx, error):
         if isinstance(error, commands.CommandNotFound):
@@ -112,6 +115,11 @@ async def on_ready():
         
     except Exception as e:
         print(f"Failed to sync commands: {e}")
+
+@bot.event
+async def on_message(message):
+    # This makes sure both on_message handlers in cogs AND commands work
+    await bot.process_commands(message)
 
 @bot.event
 async def on_guild_join(guild):
