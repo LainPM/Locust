@@ -4,8 +4,8 @@ import os
 import aiohttp
 import asyncio
 import json
-from datetime import datetime
-from typing import Dict, List, Optional
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Set
 
 class AICog(commands.Cog):
     """AI capabilities for Axis Discord bot using Gemini API"""
@@ -23,6 +23,8 @@ class AICog(commands.Cog):
                 self.db = bot.db
                 # Create a conversations collection in the existing database
                 self.conversations = self.db.conversations
+                # Create active_conversations collection
+                self.active_conversations_col = self.db.active_conversations
                 print("AI Cog: Successfully connected to MongoDB")
             except Exception as e:
                 print(f"AI Cog: Error connecting to MongoDB: {e}")
@@ -30,6 +32,25 @@ class AICog(commands.Cog):
         
         # In-memory storage fallback
         self.memory_storage = {}
+        
+        # Keep track of active conversations (user_id-channel_id)
+        # This stores users who are in an active conversation with the bot
+        self.active_conversations = set()
+        
+        # Conversation timeout (in minutes)
+        self.conversation_timeout = 10
+        
+        # Track when each conversation was last active
+        self.last_activity = {}
+        
+        # Maximum tokens before warning about context window
+        self.max_tokens_warning = 6000
+        
+        # Maximum tokens before auto-ending conversation
+        self.max_tokens_limit = 8000
+        
+        # Approximate token count per message
+        self.avg_tokens_per_message = 100
         
         # API Key for Gemini
         self.gemini_api_key = os.getenv('GEMINI_API_KEY')
@@ -54,6 +75,12 @@ class AICog(commands.Cog):
         
         # Maximum number of messages to keep in history
         self.max_history_messages = 10
+        
+        # Start background task to clean up inactive conversations
+        self.bg_task = bot.loop.create_task(self.cleanup_inactive_conversations())
+        
+        # Load active conversations from database
+        bot.loop.create_task(self.load_active_conversations())
 
     def test_model(self, model_name):
         """Test if a model is available (Note: This is a placeholder - in a real implementation,
@@ -61,6 +88,21 @@ class AICog(commands.Cog):
         # In a real implementation, you would make a synchronous request to check model availability
         # For now, we'll assume it exists
         return True
+    
+    async def load_active_conversations(self):
+        """Load active conversations from database"""
+        if self.db is None:
+            return
+            
+        try:
+            cursor = self.active_conversations_col.find({})
+            async for doc in cursor:
+                convo_id = f"{doc['user_id']}-{doc['channel_id']}"
+                self.active_conversations.add(convo_id)
+                self.last_activity[convo_id] = doc.get('last_activity', datetime.utcnow())
+            print(f"AI Cog: Loaded {len(self.active_conversations)} active conversations from database")
+        except Exception as e:
+            print(f"AI Cog: Error loading active conversations: {e}")
 
     async def save_conversation(self, user_id: int, channel_id: int, messages: List[Dict]):
         """Save conversation to storage (MongoDB or memory)"""
@@ -102,6 +144,96 @@ class AICog(commands.Cog):
         recent_messages = messages[-(self.max_history_messages-1):] if len(messages) > self.max_history_messages else messages[1:]
         
         return [system_message] + recent_messages
+    
+    async def mark_conversation_active(self, user_id: int, channel_id: int):
+        """Mark a conversation as active"""
+        convo_id = f"{user_id}-{channel_id}"
+        self.active_conversations.add(convo_id)
+        self.last_activity[convo_id] = datetime.utcnow()
+        
+        # Store in database if available
+        if self.db is not None:
+            try:
+                await self.active_conversations_col.update_one(
+                    {"user_id": user_id, "channel_id": channel_id},
+                    {"$set": {"last_activity": datetime.utcnow()}},
+                    upsert=True
+                )
+            except Exception as e:
+                print(f"AI Cog: Error storing active conversation: {e}")
+    
+    async def mark_conversation_inactive(self, user_id: int, channel_id: int):
+        """Mark a conversation as inactive"""
+        convo_id = f"{user_id}-{channel_id}"
+        if convo_id in self.active_conversations:
+            self.active_conversations.remove(convo_id)
+            
+        if convo_id in self.last_activity:
+            del self.last_activity[convo_id]
+        
+        # Remove from database if available
+        if self.db is not None:
+            try:
+                await self.active_conversations_col.delete_one(
+                    {"user_id": user_id, "channel_id": channel_id}
+                )
+            except Exception as e:
+                print(f"AI Cog: Error removing active conversation: {e}")
+    
+    def is_conversation_active(self, user_id: int, channel_id: int) -> bool:
+        """Check if a conversation is active"""
+        convo_id = f"{user_id}-{channel_id}"
+        return convo_id in self.active_conversations
+    
+    def estimate_token_count(self, messages: List[Dict]) -> int:
+        """Estimate the token count in a conversation"""
+        # A more accurate implementation would use tiktoken or a similar library
+        # For now we'll use a simple approximation
+        total_chars = sum(len(message["content"]) for message in messages)
+        # Roughly 4 characters per token for English text
+        return total_chars // 4
+    
+    async def cleanup_inactive_conversations(self):
+        """Background task to clean up inactive conversations"""
+        await self.bot.wait_until_ready()
+        while not self.bot.is_closed():
+            try:
+                now = datetime.utcnow()
+                to_remove = []
+                
+                # Find inactive conversations
+                for convo_id, last_time in self.last_activity.items():
+                    if now - last_time > timedelta(minutes=self.conversation_timeout):
+                        to_remove.append(convo_id)
+                
+                # Remove inactive conversations
+                for convo_id in to_remove:
+                    if convo_id in self.active_conversations:
+                        self.active_conversations.remove(convo_id)
+                        
+                    if convo_id in self.last_activity:
+                        del self.last_activity[convo_id]
+                        
+                    # Get user_id and channel_id from convo_id
+                    user_id, channel_id = map(int, convo_id.split('-'))
+                    
+                    # Remove from database
+                    if self.db is not None:
+                        try:
+                            await self.active_conversations_col.delete_one(
+                                {"user_id": user_id, "channel_id": channel_id}
+                            )
+                        except Exception as e:
+                            print(f"AI Cog: Error removing inactive conversation: {e}")
+                
+                if to_remove:
+                    print(f"AI Cog: Cleaned up {len(to_remove)} inactive conversations")
+                
+                # Run every minute
+                await asyncio.sleep(60)
+            except Exception as e:
+                print(f"AI Cog: Error in cleanup task: {e}")
+                await asyncio.sleep(60)
 
     async def query_gemini(self, messages: List[Dict]) -> str:
         """Query Gemini API"""
@@ -171,27 +303,50 @@ class AICog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message):
-        """Listen for 'Hey Axis' messages"""
+        """Listen for messages and handle conversations"""
         if message.author.bot:
             return
         
-        content = message.content.strip().lower()
+        content = message.content.strip()
+        user_id = message.author.id
+        channel_id = message.channel.id
         
-        # Check if message starts with "Hey Axis"
-        if content.startswith("hey axis"):
-            # Remove the trigger phrase and get the actual query
-            query = message.content[9:].strip()
-            
-            if not query:
-                await message.channel.send("Hey there! How can I help you today?")
+        # Check if this is an active conversation
+        is_active = self.is_conversation_active(user_id, channel_id)
+        
+        # If message starts with "Hey Axis" or conversation is active
+        if content.lower().startswith("hey axis") or is_active:
+            # Check for conversation exit commands
+            if is_active and content.lower() in ["stop", "end", "exit", "bye", "goodbye", "end chat", "stop chat"]:
+                await self.mark_conversation_inactive(user_id, channel_id)
+                await message.channel.send("I'll be here if you need me again! Just say 'Hey Axis'.")
                 return
+                
+            # If message starts with "Hey Axis", remove that part to get the query
+            if content.lower().startswith("hey axis"):
+                query = content[9:].strip()
+                
+                # If no query after "Hey Axis", just greet
+                if not query:
+                    await message.channel.send("Hey there! How can I help you today? We're now in conversation mode, so you can keep chatting with me without saying 'Hey Axis' each time. Just say 'stop' when you're done.")
+                    await self.mark_conversation_active(user_id, channel_id)
+                    return
+            else:
+                # Use the entire message as query
+                query = content
             
-            async with message.channel.typing():
-                try:
-                    await self.process_ai_query(message, query)
-                except Exception as e:
-                    print(f"AI Cog: Error processing AI query: {e}")
-                    await message.channel.send(f"Sorry, I encountered an error: {str(e)}")
+            # Continue only if there's an actual query
+            if query:
+                async with message.channel.typing():
+                    try:
+                        # Mark the conversation as active
+                        await self.mark_conversation_active(user_id, channel_id)
+                        
+                        # Process the query
+                        await self.process_ai_query(message, query)
+                    except Exception as e:
+                        print(f"AI Cog: Error processing AI query: {e}")
+                        await message.channel.send(f"Sorry, I encountered an error: {str(e)}")
 
     async def process_ai_query(self, message, query):
         """Process an AI query and respond"""
@@ -205,7 +360,7 @@ class AICog(commands.Cog):
         if not conversation:
             conversation = [{
                 "role": "system",
-                "content": "You are Axis, a helpful AI assistant for Discord. Be concise, friendly, and helpful."
+                "content": "You are Axis, a helpful AI assistant for Discord. Be concise, friendly, and helpful. The user can chat with you in conversation mode, and they don't need to prefix messages with 'Hey Axis' during an active conversation. If they say 'stop', 'end', 'exit', 'bye', or 'goodbye', end the conversation politely."
             }]
         
         # Add user message
@@ -213,6 +368,20 @@ class AICog(commands.Cog):
             "role": "user",
             "content": query
         })
+        
+        # Estimate token count and check for warnings
+        estimated_tokens = self.estimate_token_count(conversation)
+        
+        # If approaching token limit, warn user and continue
+        if estimated_tokens > self.max_tokens_warning and estimated_tokens <= self.max_tokens_limit:
+            await message.channel.send("⚠️ Our conversation is getting quite long. Consider saying 'end chat' soon to restart with a fresh context.")
+        
+        # If exceeding token limit, auto-end conversation
+        if estimated_tokens > self.max_tokens_limit:
+            await message.channel.send("Our conversation has reached the context limit. I'll need to end this chat session. Feel free to start a new one with 'Hey Axis'!")
+            await self.mark_conversation_inactive(user_id, channel_id)
+            await self.clear_conversation(None, user_id, channel_id)
+            return
         
         # Trim conversation to fit context window
         trimmed_conversation = self.trim_conversation(conversation)
@@ -242,11 +411,15 @@ class AICog(commands.Cog):
             await message.reply(response_text)
 
     @commands.command(name="ai-clear")
-    async def clear_conversation(self, ctx):
+    async def clear_conversation_command(self, ctx):
         """Clear your conversation history in this channel"""
         user_id = ctx.author.id
         channel_id = ctx.channel.id
         
+        await self.clear_conversation(ctx, user_id, channel_id)
+    
+    async def clear_conversation(self, ctx, user_id, channel_id):
+        """Clear conversation helper method"""
         if self.conversations is not None:
             try:
                 await self.conversations.delete_one({"user_id": user_id, "channel_id": channel_id})
@@ -260,13 +433,35 @@ class AICog(commands.Cog):
             # Remove from memory storage
             if f"{user_id}-{channel_id}" in self.memory_storage:
                 del self.memory_storage[f"{user_id}-{channel_id}"]
-                
-        await ctx.send("Your conversation history in this channel has been cleared.")
+        
+        # Send confirmation message if this was called from a command
+        if ctx:
+            await ctx.send("Your conversation history in this channel has been cleared.")
 
     @commands.command(name="ai-model")
     async def show_model(self, ctx):
         """Show which Gemini model is being used"""
         await ctx.send(f"Currently using Gemini model: `{self.model_name}`")
+    
+    @commands.command(name="ai-status")
+    async def show_status(self, ctx):
+        """Show status of active conversations"""
+        user_id = ctx.author.id
+        channel_id = ctx.channel.id
+        
+        is_active = self.is_conversation_active(user_id, channel_id)
+        
+        if is_active:
+            # Get conversation history
+            conversation = await self.get_conversation(user_id, channel_id)
+            estimated_tokens = self.estimate_token_count(conversation)
+            
+            await ctx.send(f"You are in an active conversation with Axis.\n"
+                          f"Messages in history: {len(conversation) - 1}\n"
+                          f"Estimated tokens: {estimated_tokens}/{self.max_tokens_limit}\n"
+                          f"The conversation will automatically end after {self.conversation_timeout} minutes of inactivity.")
+        else:
+            await ctx.send("You are not in an active conversation with Axis. Start one by saying 'Hey Axis'!")
 
 async def setup(bot):
     await bot.add_cog(AICog(bot))
