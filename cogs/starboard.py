@@ -4,7 +4,7 @@ from discord.ext import commands
 from discord import app_commands
 import datetime
 import asyncio
-from typing import Optional, List, Literal
+from typing import Optional, List
 
 class Starboard(commands.Cog):
     def __init__(self, bot):
@@ -153,7 +153,6 @@ class Starboard(commands.Cog):
                                 featured_message = await featured_channel.fetch_message(post["featured_message_id"])
                                 
                                 # Update the star count
-                                content = featured_message.content
                                 new_content = f"⭐ **{star_count}** | {message.channel.mention} | {message.author.mention}"
                                 
                                 await featured_message.edit(content=new_content)
@@ -220,6 +219,7 @@ class Starboard(commands.Cog):
         
         return embed
     
+    @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload):
         """Handle reaction being added to messages"""
         # Ignore bot reactions
@@ -349,7 +349,8 @@ class Starboard(commands.Cog):
             except (discord.Forbidden, discord.HTTPException):
                 pass
     
-        async def on_raw_reaction_remove(self, payload):
+    @commands.Cog.listener()
+    async def on_raw_reaction_remove(self, payload):
         """Handle reaction being removed from messages"""
         # Get server settings
         server_settings = await self.starboard_settings.find_one({"guild_id": payload.guild_id})
@@ -420,7 +421,6 @@ class Starboard(commands.Cog):
                 {"_id": post["_id"]},
                 {"$set": {"star_count": star_count}}
             )
-        
     
     @commands.Cog.listener()
     async def on_message(self, message):
@@ -478,15 +478,10 @@ class Starboard(commands.Cog):
             "created_at": datetime.datetime.now()
         })
     
-    async def get_server_settings(self, guild_id):
-        """Get starboard settings for a server"""
-        settings = await self.starboard_settings.find_one({"guild_id": guild_id})
-        return settings
-    
-    @app_commands.command(name="starboard", description="Set up or update the starboard system")
+    @app_commands.command(name="setup_starboard", description="Set up or update the starboard system")
     @app_commands.guild_only()
     @app_commands.default_permissions(administrator=True)
-    async def starboard(
+    async def setup_starboard(
         self,
         interaction: discord.Interaction,
         channels: str,
