@@ -648,55 +648,337 @@ class Marketplace(commands.Cog):
     async def marketstats(self, interaction: discord.Interaction):
         # Check if user has admin permissions
         if not interaction.user.guild_permissions.administrator:
-            return await interaction.response.send_message(
-                "You need administrator permissions to view marketplace statistics.",
-                ephemeral=True
-            )
-
+            return await interaction.response.send_message("You need administrator permissions to view marketplace statistics.", ephemeral=True)
+        
+        await interaction.response.defer(ephemeral=True)
+        
+        # Get server settings to ensure marketplace is set up
         guild_id = interaction.guild.id
-
-        # Aggregate counts
-        total_posts = await self.marketplace_posts.count_documents({"guild_id": guild_id})
-        approved_posts = await self.marketplace_posts.count_documents({
-            "guild_id": guild_id,
-            "status": "approved"
-        })
-        pending_posts = await self.marketplace_posts.count_documents({
-            "guild_id": guild_id,
-            "status": "pending"
-        })
-        declined_posts = await self.marketplace_posts.count_documents({
-            "guild_id": guild_id,
-            "status": "declined"
-        })
-
-        # Breakdown by post type
-        types = ["Hiring", "For-Hire", "Selling"]
-        type_counts = {}
-        for t in types:
-            type_counts[t] = await self.marketplace_posts.count_documents({
-                "guild_id": guild_id,
-                "post_type": t
-            })
-
-        # Build embed
+        settings = await self.get_server_settings(guild_id)
+        
+        if not settings:
+            return await interaction.followup.send("The marketplace system is not set up in this server. Please run `/setup_marketposts` first.", ephemeral=True)
+        
+        # Get post counts by type and status
+        pipeline = [
+            {"$match": {"guild_id": guild_id}},
+            {"$group": {
+                "_id": {
+                    "post_type": "$post_type",
+                    "status": "$status"
+                },
+                "count": {"$sum": 1}
+            }}
+        ]
+        
+        stats = {}
+        async for result in self.marketplace_posts.aggregate(pipeline):
+            post_type = result["_id"]["post_type"]
+            status = result["_id"]["status"]
+            count = result["count"]
+            
+            if post_type not in stats:
+                stats[post_type] = {}
+            
+            stats[post_type][status] = count
+        
+        # Calculate totals
+        total_posts = 0
+        total_approved = 0
+        total_pending = 0
+        total_declined = 0
+        
+        for post_type, statuses in stats.items():
+            post_type_total = sum(statuses.values())
+            total_posts += post_type_total
+            total_approved += statuses.get("approved", 0)
+            total_pending += statuses.get("pending", 0)
+            total_declined += statuses.get("declined", 0)
+        
+        # Get recent activity (last 7 days)
+        seven_days_ago = datetime.datetime.now() - datetime.timedelta(days=7)
+        recent_query = {"guild_id": guild_id, "created_at": {"$gte": seven_days_ago}}
+        recent_count = await self.marketplace_posts.count_documents(recent_query)
+        
+        # Get top posters (limited to top 5)
+        posters_pipeline = [
+            {"$match": {"guild_id": guild_id}},
+            {"$group": {
+                "_id": "$user_id",
+                "count": {"$sum": 1}
+            }},
+            {"$sort": {"count": -1}},
+            {"$limit": 5}
+        ]
+        
+        top_posters = []
+        async for result in self.marketplace_posts.aggregate(posters_pipeline):
+            user_id = result["_id"]
+            count = result["count"]
+            
+            # Try to get the user's name
+            user = interaction.guild.get_member(user_id)
+            username = user.display_name if user else f"Unknown User ({user_id})"
+            
+            top_posters.append((username, count))
+        
+        # Create the embed
         embed = discord.Embed(
-            title="📊 Marketplace Statistics",
-            color=discord.Color.blurple(),
+            title="Marketplace Statistics",
+            description=f"Statistics for the marketplace system in {interaction.guild.name}",
+            color=discord.Color.blue(),
             timestamp=datetime.datetime.now()
         )
-        embed.set_footer(text=f"Server: {interaction.guild.name}", icon_url=interaction.guild.icon.url if interaction.guild.icon else None)
+        
+        # Add overall stats
+        embed.add_field(
+            name="Overall Stats",
+            value=f"**Total Posts:** {total_posts}\n"
+                  f"**Approved:** {total_approved}\n"
+                  f"**Pending:** {total_pending}\n"
+                  f"**Declined:** {total_declined}\n"
+                  f"**Last 7 Days:** {recent_count}",
+            inline=False
+        )
+        
+        # Add stats by post type
+        for post_type in ["Hiring", "For-Hire", "Selling"]:
+            if post_type in stats:
+                type_stats = stats[post_type]
+                approved = type_stats.get("approved", 0)
+                pending = type_stats.get("pending", 0)
+                declined = type_stats.get("declined", 0)
+                total = approved + pending + declined
+                
+                embed.add_field(
+                    name=f"{post_type} Posts",
+                    value=f"**Total:** {total}\n"
+                          f"**Approved:** {approved}\n"
+                          f"**Pending:** {pending}\n"
+                          f"**Declined:** {declined}",
+                    inline=True
+                )
+            else:
+                embed.add_field(
+                    name=f"{post_type} Posts",
+                    value="No posts yet",
+                    inline=True
+                )
+        
+        # Add top posters
+        if top_posters:
+            top_posters_text = "\n".join([f"**{username}:** {count} posts" for username, count in top_posters])
+            embed.add_field(name="Top Posters", value=top_posters_text, inline=False)
+        else:
+            embed.add_field(name="Top Posters", value="No posts yet", inline=False)
+        
+        # Add footer with timestamp
+        embed.set_footer(text=f"Stats as of {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    
+    @app_commands.command(name="mymarketposts", description="View your own marketplace posts")
+    async def mymarketposts(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        
+        # Get server settings
+        guild_id = interaction.guild.id
+        settings = await self.get_server_settings(guild_id)
+        
+        if not settings:
+            return await interaction.followup.send("The marketplace system is not set up in this server.", ephemeral=True)
+        
+        # Get user's posts
+        user_id = interaction.user.id
+        query = {"guild_id": guild_id, "user_id": user_id}
+        
+        # Sort by creation date (newest first)
+        cursor = self.marketplace_posts.find(query).sort("created_at", -1)
+        
+        # Count posts by status
+        approved_count = 0
+        pending_count = 0
+        declined_count = 0
+        
+        posts = []
+        async for post in cursor:
+            posts.append(post)
+            if post["status"] == "approved":
+                approved_count += 1
+            elif post["status"] == "pending":
+                pending_count += 1
+            elif post["status"] == "declined":
+                declined_count += 1
+        
+        if not posts:
+            return await interaction.followup.send("You haven't created any marketplace posts yet.", ephemeral=True)
+        
+        # Create the embed
+        embed = discord.Embed(
+            title="Your Marketplace Posts",
+            description=f"You have created {len(posts)} marketplace posts in this server.",
+            color=discord.Color.blue(),
+            timestamp=datetime.datetime.now()
+        )
+        
+        # Add summary
+        embed.add_field(
+            name="Summary",
+            value=f"**Total Posts:** {len(posts)}\n"
+                  f"**Approved:** {approved_count}\n"
+                  f"**Pending:** {pending_count}\n"
+                  f"**Declined:** {declined_count}",
+            inline=False
+        )
+        
+        # Add recent posts (up to 5)
+        recent_posts = posts[:5]
+        for post in recent_posts:
+            title = post["title"]
+            status = post["status"].capitalize()
+            post_type = post["post_type"]
+            created_at = post["created_at"].strftime("%Y-%m-%d %H:%M")
+            
+            # Get status emoji
+            status_emoji = "✅" if status == "Approved" else "⏳" if status == "Pending" else "❌"
+            
+            # Get channel link if approved
+            channel_info = ""
+            if status == "Approved":
+                channel_id = None
+                if post_type == "Hiring":
+                    channel_id = settings.get("hiring_channel_id")
+                elif post_type == "For-Hire":
+                    channel_id = settings.get("forhire_channel_id")
+                elif post_type == "Selling":
+                    channel_id = settings.get("selling_channel_id")
+                
+                if channel_id:
+                    channel = interaction.guild.get_channel(channel_id)
+                    if channel:
+                        channel_info = f" in {channel.mention}"
+            
+            # Add field for this post
+            embed.add_field(
+                name=f"{status_emoji} {title}",
+                value=f"**Type:** {post_type}\n"
+                      f"**Status:** {status}{channel_info}\n"
+                      f"**Created:** {created_at}",
+                inline=False
+            )
+        
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    
+    @app_commands.command(name="clearmarketposts", description="Clear all marketplace posts")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.describe(
+        confirm="Type 'confirm' to proceed with deletion",
+        post_type="Type of posts to clear (optional)",
+        status="Status of posts to clear (optional)"
+    )
+    @app_commands.choices(
+        post_type=[
+            app_commands.Choice(name="Hiring", value="Hiring"),
+            app_commands.Choice(name="For-Hire", value="For-Hire"),
+            app_commands.Choice(name="Selling", value="Selling")
+        ],
+        status=[
+            app_commands.Choice(name="Approved", value="approved"),
+            app_commands.Choice(name="Pending", value="pending"),
+            app_commands.Choice(name="Declined", value="declined")
+        ]
+    )
+    async def clearmarketposts(
+        self, 
+        interaction: discord.Interaction, 
+        confirm: str,
+        post_type: Optional[str] = None,
+        status: Optional[str] = None
+    ):
+        # Check if user has admin permissions
+        if not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message("You need administrator permissions to clear marketplace posts.", ephemeral=True)
+        
+        # Confirm deletion
+        if confirm.lower() != "confirm":
+            return await interaction.response.send_message("You must type 'confirm' to proceed with deletion.", ephemeral=True)
+        
+        await interaction.response.defer(ephemeral=True)
+        
+        # Build the query
+        guild_id = interaction.guild.id
+        query = {"guild_id": guild_id}
+        
+        if post_type:
+            query["post_type"] = post_type
+        
+        if status:
+            query["status"] = status
+        
+        # Count posts that will be deleted
+        count = await self.marketplace_posts.count_documents(query)
+        
+        if count == 0:
+            return await interaction.followup.send("No matching posts found to delete.", ephemeral=True)
+        
+        # Delete posts
+        result = await self.marketplace_posts.delete_many(query)
+        
+        # Confirm deletion
+        filter_text = ""
+        if post_type and status:
+            filter_text = f" ({post_type} posts with status '{status}')"
+        elif post_type:
+            filter_text = f" ({post_type} posts)"
+        elif status:
+            filter_text = f" (posts with status '{status}')"
+        
+        await interaction.followup.send(f"Successfully deleted {result.deleted_count} marketplace posts{filter_text}.", ephemeral=True)
+    
+    @app_commands.command(name="reset_marketplace", description="Reset the entire marketplace system")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.describe(confirm="Type 'RESET MARKETPLACE' to confirm")
+    async def reset_marketplace(self, interaction: discord.Interaction, confirm: str):
+        # Check if user has admin permissions
+        if not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message("You need administrator permissions to reset the marketplace system.", ephemeral=True)
+        
+        # Confirm reset
+        if confirm != "RESET MARKETPLACE":
+            return await interaction.response.send_message("You must type 'RESET MARKETPLACE' to confirm. This action cannot be undone!", ephemeral=True)
+        
+        await interaction.response.defer(ephemeral=True)
+        
+        guild_id = interaction.guild.id
+        
+        # Delete all posts for this server
+        posts_result = await self.marketplace_posts.delete_many({"guild_id": guild_id})
+        
+        # Delete all scheduled deletions for this server
+        deletions_result = await self.scheduled_deletions.delete_many({"guild_id": guild_id})
+        
+        # Delete marketplace settings
+        settings_result = await self.marketplace_settings.delete_one({"guild_id": guild_id})
+        
+        # Confirmation message
+        embed = discord.Embed(
+            title="Marketplace System Reset",
+            description="The marketplace system has been completely reset for this server.",
+            color=discord.Color.red(),
+            timestamp=datetime.datetime.now()
+        )
+        
+        embed.add_field(name="Posts Deleted", value=str(posts_result.deleted_count), inline=True)
+        embed.add_field(name="Scheduled Deletions Cleared", value=str(deletions_result.deleted_count), inline=True)
+        embed.add_field(name="Settings Removed", value="Yes" if settings_result.deleted_count > 0 else "No settings found", inline=True)
+        
+        embed.add_field(
+            name="Next Steps",
+            value="To set up the marketplace system again, use `/setup_marketposts`.",
+            inline=False
+        )
+        
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
-        embed.add_field(name="Total Posts", value=str(total_posts), inline=True)
-        embed.add_field(name="Approved", value=str(approved_posts), inline=True)
-        embed.add_field(name="Pending", value=str(pending_posts), inline=True)
-        embed.add_field(name="Declined", value=str(declined_posts), inline=True)
-
-        # Add a blank line for spacing
-        embed.add_field(name="\u200b", value="\u200b", inline=False)
-
-        # Per-type breakdown
-        for t, count in type_counts.items():
-            embed.add_field(name=f"{t} Posts", value=str(count), inline=True)
-
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+async def setup(bot):
+    await bot.add_cog(Marketplace(bot))
