@@ -567,5 +567,3 @@ class Purge(commands.Cog):
 async def setup(bot):
     cog = Purge(bot)
     await bot.add_cog(cog)
-    # Register the purge group with the bot
-    bot.tree.add_command(cog.purge_group)
