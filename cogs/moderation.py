@@ -540,6 +540,7 @@ class Moderation(commands.Cog):
             return await interaction.response.send_message(f"{user.mention} has no moderation logs.", ephemeral=False)
         
         log_count = len(logs_list)
+        logs_per_page = 5
         
         # Create initial embed
         embed = discord.Embed(
@@ -550,10 +551,8 @@ class Moderation(commands.Cog):
         )
         
         # Display first page of logs (limited to 5 per page)
-        logs_per_page = 5
-        current_page_logs = logs_list[:logs_per_page]
-        
-        for log in current_page_logs:
+        first_page_logs = logs_list[:logs_per_page]
+        for log in first_page_logs:
             case_id = log.get("case_id", "Unknown")
             action_type = log.get("action_type", "unknown")
             reason = log.get("reason", "No reason provided")
@@ -581,13 +580,13 @@ class Moderation(commands.Cog):
         
         embed.set_thumbnail(url=user.display_avatar.url)
         
-        # Calculate max pages
-        max_pages = max(1, ((log_count - 1) // logs_per_page) + 1)
-        embed.set_footer(text=f"User ID: {user.id} | Page 1/{max_pages}")
+        # Calculate total pages
+        total_pages = ((log_count - 1) // logs_per_page) + 1
+        embed.set_footer(text=f"User ID: {user.id} | Page 1/{total_pages}")
         
-        # Create pagination view if there are more than 5 logs
+        # Create pagination view if there are more than logs_per_page logs
         if log_count > logs_per_page:
-            view = PaginationView(logs_list, user.display_name, user.id, logs_per_page=logs_per_page)
+            view = ModlogsPaginator(logs_list, user, logs_per_page)
             await interaction.response.send_message(embed=embed, view=view)
         else:
             await interaction.response.send_message(embed=embed)
