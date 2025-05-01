@@ -504,167 +504,155 @@ class Roblox(commands.Cog):
             embed.set_image(url=f"https://tr.rbxcdn.com/avatar/420/420/Avatar/Png/noCache/{user_id}")
             await interaction.followup.send(embed=embed)
     
-    @app_commands.command(name="robloxgroup", description="Look up a Roblox group by ID")
+        @app_commands.command(name="robloxgroup", description="Look up a Roblox group by ID")
     @app_commands.describe(group_id="Roblox group ID")
     async def roblox_group_lookup(self, interaction: discord.Interaction, group_id: str):
         """Look up a Roblox group by ID"""
         await interaction.response.defer()
-        
+
         if not group_id.isdigit():
             await interaction.followup.send("Group ID must be a number.")
             return
-        
+
         try:
-            # Get group information
-            async with self.session.get(f"https://groups.roblox.com/v1/groups/{group_id}") as response:
-                if response.status != 200:
+            # 1) Fetch basic group info
+            async with self.session.get(f"https://groups.roblox.com/v1/groups/{group_id}") as resp:
+                if resp.status != 200:
                     await interaction.followup.send(f"Could not find Roblox group with ID {group_id}.")
                     return
-                
-                group_info = await response.json()
-            
-            # Get more accurate member count from Roblox API
-            async with self.session.get(f"https://groups.roblox.com/v1/groups/{group_id}/membership") as response:
-                if response.status == 200:
-                    membership_data = await response.json()
-                    members_count = membership_data.get("memberCount", 0)
-                else:
-                    # Fallback to the count from group_info
-                    members_count = group_info.get("memberCount", 0)
-            
-            # Get group roles
-            async with self.session.get(f"https://groups.roblox.com/v1/groups/{group_id}/roles") as response:
-                if response.status == 200:
-                    roles_data = await response.json()
+                group_info = await resp.json()
+
+            # 2) Try v2 API for accurate memberCount
+            members_count = None
+            async with self.session.get(f"https://groups.roblox.com/v2/groups/{group_id}") as resp_v2:
+                if resp_v2.status == 200:
+                    data_v2 = await resp_v2.json()
+                    members_count = data_v2.get("memberCount")
+
+            # 3) Fetch roles (we may need them to sum if v2 fails)
+            async with self.session.get(f"https://groups.roblox.com/v1/groups/{group_id}/roles") as resp_roles:
+                if resp_roles.status == 200:
+                    roles_data = await resp_roles.json()
                     roles = roles_data.get("roles", [])
                 else:
                     roles = []
-            
-            # Get group games
-            async with self.session.get(f"https://games.roblox.com/v2/groups/{group_id}/games?accessFilter=Public&limit=10&sortOrder=Desc") as response:
-                if response.status == 200:
-                    games_data = await response.json()
+
+            # 4) Fallback: sum each role's count if v2 didn't provide a non-null
+            if members_count is None:
+                if roles:
+                    members_count = sum(r.get("memberCount", 0) for r in roles)
+                else:
+                    members_count = group_info.get("memberCount", 0)
+
+            # 5) Fetch up to 5 group games
+            async with self.session.get(
+                f"https://games.roblox.com/v2/groups/{group_id}/games?accessFilter=Public&limit=5&sortOrder=Desc"
+            ) as resp_games:
+                if resp_games.status == 200:
+                    games_data = await resp_games.json()
                     games = games_data.get("data", [])
                 else:
                     games = []
-            
-            # Get group icon image
-            group_icon_url = None
-            if group_info.get("imageUrl"):
-                group_icon_url = group_info["imageUrl"]
-                
+
+            # 6) Try to download the group icon
+            group_icon_bytes = None
+            icon_url = group_info.get("imageUrl")
+            if icon_url:
                 try:
-                    async with self.session.get(group_icon_url) as response:
-                        if response.status == 200:
-                            group_icon_bytes = await response.read()
-                        else:
-                            group_icon_bytes = None
+                    async with self.session.get(icon_url) as resp_icon:
+                        if resp_icon.status == 200:
+                            group_icon_bytes = await resp_icon.read()
                 except:
-                    group_icon_bytes = None
-            else:
-                group_icon_bytes = None
-            
-            # Create embed
+                    pass
+
+            # Build the embed
             embed = discord.Embed(
                 title=f"Roblox Group: {group_info['name']}",
-                description=group_info.get("description", "No description") or "No description",
-                color=discord.Color.from_rgb(226, 35, 26),  # Roblox red
-                timestamp=datetime.datetime.now(),
+                description=group_info.get("description") or "No description",
+                color=discord.Color.from_rgb(226, 35, 26),
+                timestamp=datetime.datetime.utcnow(),
                 url=f"https://www.roblox.com/groups/{group_id}/group"
             )
-            
-            # Add owner info if available
-            if group_info.get("owner"):
-                owner_name = group_info["owner"].get("username", "Unknown")
-                owner_id = group_info["owner"].get("userId", 0)
-                embed.add_field(name="👑 Owner", value=f"[{owner_name}](https://www.roblox.com/users/{owner_id}/profile)", inline=True)
+
+            # Owner
+            owner = group_info.get("owner")
+            if owner:
+                embed.add_field(
+                    name="👑 Owner",
+                    value=f"[{owner.get('username')}](https://www.roblox.com/users/{owner.get('userId')}/profile)",
+                    inline=True
+                )
             else:
-                embed.add_field(name="👑 Owner", value="No owner (owned by Roblox)", inline=True)
-            
-            # Add member count - fix the formatting error
-            try:
-                if isinstance(members_count, (int, float)):
-                    formatted_count = format(members_count, ",")
-                    embed.add_field(name="👥 Members", value=formatted_count, inline=True)
-                else:
-                    embed.add_field(name="👥 Members", value=str(members_count), inline=True)
-            except Exception as e:
-                print(f"Error formatting member count: {e}")
-                embed.add_field(name="👥 Members", value=str(members_count), inline=True)
-            
-            # Add creation date if available
-            if "created" in group_info:
-                created_date = datetime.datetime.fromisoformat(group_info["created"].replace("Z", "+00:00"))
-                embed.add_field(name="📅 Created", value=created_date.strftime("%b %d, %Y"), inline=True)
-            
-            # Add group status (public/private)
-            is_public = "Yes" if group_info.get("publicEntryAllowed", False) else "No"
+                embed.add_field(name="👑 Owner", value="Roblox", inline=True)
+
+            # Members
+            embed.add_field(
+                name="👥 Members",
+                value=f"{members_count:,}",
+                inline=True
+            )
+
+            # Created
+            if created := group_info.get("created"):
+                dt = datetime.datetime.fromisoformat(created.replace("Z", "+00:00"))
+                embed.add_field(name="📅 Created", value=dt.strftime("%b %d, %Y"), inline=True)
+
+            # Public entry
+            is_public = "Yes" if group_info.get("publicEntryAllowed") else "No"
             embed.add_field(name="🔐 Public Entry", value=is_public, inline=True)
-            
-            # Add group shout if available
-            if group_info.get("shout") and group_info["shout"].get("body"):
-                shout_text = group_info["shout"]["body"]
-                shout_poster = group_info["shout"]["poster"]["username"]
-                shout_date = datetime.datetime.fromisoformat(group_info["shout"]["updated"].replace("Z", "+00:00"))
-                
-                # Limit shout text to avoid excessive length
+
+            # Shout
+            shout = group_info.get("shout") or {}
+            if shout_text := shout.get("body"):
+                poster = shout.get("poster", {}).get("username", "Unknown")
+                shout_dt = datetime.datetime.fromisoformat(shout.get("updated", created).replace("Z", "+00:00"))
                 if len(shout_text) > 200:
                     shout_text = shout_text[:197] + "..."
-                
                 embed.add_field(
                     name="📢 Group Shout",
-                    value=f'"{shout_text}"\n— {shout_poster} on {shout_date.strftime("%b %d, %Y")}',
+                    value=f"\"{shout_text}\"\n— {poster} on {shout_dt.strftime('%b %d, %Y')}",
                     inline=False
                 )
-            
-            # Add group roles
+
+            # Roles (up to 5)
             if roles:
-                roles_text = []
-                for role in roles:
-                    role_name = role.get("name", "Unknown")
-                    role_rank = role.get("rank", 0)
-                    roles_text.append(f"{role_name} (Rank: {role_rank})")
-                
+                role_lines = [f"{r['name']} (Rank {r['rank']}, {r['memberCount']:,} members)" for r in roles[:5]]
                 embed.add_field(
                     name=f"👥 Roles ({len(roles)})",
-                    value="\n".join(roles_text[:5]) if roles_text else "None",
+                    value="\n".join(role_lines),
                     inline=False
                 )
-                
                 if len(roles) > 5:
-                    embed.add_field(name="", value=f"*and {len(roles) - 5} more roles...*", inline=False)
-            
-            # Add group games if available
-            if games:
-                games_text = []
-                for game in games[:3]:  # Show up to 3 games
-                    game_name = game.get("name", "Unknown Game")
-                    game_visits = game.get("placeVisits", 0)
-                    games_text.append(f"{game_name} - {game_visits:,} visits")
-                
-                if games_text:
                     embed.add_field(
-                        name=f"🎮 Group Games ({len(games)})",
-                        value="\n".join(games_text),
+                        name="",
+                        value=f"*and {len(roles)-5} more...*",
                         inline=False
                     )
-            
-            # Set footer
+
+            # Games (up to 5)
+            if games:
+                game_lines = []
+                for g in games:
+                    pname = g.get("name", "Unknown")
+                    visits = g.get("visits", g.get("placeVisits", 0))
+                    pid = g.get("rootPlace", {}).get("id")
+                    url = f"https://www.roblox.com/games/{pid}" if pid else "N/A"
+                    game_lines.append(f"[{pname}]({url}) — {visits:,} visits")
+                embed.add_field(name=f"🎮 Games ({len(games)})", value="\n".join(game_lines), inline=False)
+
+            # Footer & Thumbnail
             embed.set_footer(text=f"Roblox Group ID: {group_id}")
-            
-            # Send with icon as attachment if available
             if group_icon_bytes:
                 file = discord.File(fp=io.BytesIO(group_icon_bytes), filename="group_icon.png")
                 embed.set_thumbnail(url="attachment://group_icon.png")
                 await interaction.followup.send(embed=embed, file=file)
             else:
-                # Fallback to URL if we couldn't download the image
-                if group_icon_url:
-                    embed.set_thumbnail(url=group_icon_url)
+                if icon_url:
+                    embed.set_thumbnail(url=icon_url)
                 await interaction.followup.send(embed=embed)
-        
+
         except Exception as e:
-            await interaction.followup.send(f"An error occurred: {str(e)}")
+            await interaction.followup.send(f"An error occurred: {e}")
 
 async def setup(bot):
     await bot.add_cog(Roblox(bot))
