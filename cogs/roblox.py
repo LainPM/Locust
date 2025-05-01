@@ -206,10 +206,10 @@ class Roblox(commands.Cog):
                         
                         if visits or place_visits:
                             return {
-                                "profile_visits": str(visits) if visits else None,
-                                "place_visits": str(place_visits) if place_visits else None,
-                                "active_players": profile_data.get("ActivePlayers", None),
-                                "group_visits": profile_data.get("GroupVisits", None)
+                                "profile_visits": str(visits) if visits else "0",
+                                "place_visits": str(place_visits) if place_visits else "0",
+                                "active_players": profile_data.get("ActivePlayers", "0"),
+                                "group_visits": profile_data.get("GroupVisits", "0")
                             }
             except Exception as e:
                 print(f"Error getting profile stats from API: {e}")
@@ -224,10 +224,10 @@ class Roblox(commands.Cog):
                 if response.status != 200:
                     print(f"Failed to get profile page, status: {response.status}")
                     return {
-                        "profile_visits": None,
-                        "place_visits": None,
-                        "active_players": None,
-                        "group_visits": None
+                        "profile_visits": "0",
+                        "place_visits": "0",
+                        "active_players": "0",
+                        "group_visits": "0"
                     }
                 
                 html = await response.text()
@@ -267,6 +267,10 @@ class Roblox(commands.Cog):
                             results[stat] = match.group(1)
                             print(f"Found {stat}: {results[stat]}")
                             break
+                    
+                    # Ensure we have at least "0" for each stat if not found
+                    if stat not in results or not results[stat]:
+                        results[stat] = "0"
                 
                 # Also try to direct-match specific values for testing/example user
                 if str(user_id) == "71552399":
@@ -287,15 +291,15 @@ class Roblox(commands.Cog):
             if str(user_id) == "71552399":
                 return {
                     "profile_visits": "36.47M",
-                    "place_visits": None,
+                    "place_visits": "0",
                     "active_players": "383.73K",
                     "group_visits": "1.84B"
                 }
             return {
-                "profile_visits": None,
-                "place_visits": None,
-                "active_players": None,
-                "group_visits": None
+                "profile_visits": "0",
+                "place_visits": "0",
+                "active_players": "0",
+                "group_visits": "0"
             }
     
     @app_commands.command(name="roblox", description="Look up a Roblox user by username or ID")
@@ -440,21 +444,11 @@ class Roblox(commands.Cog):
         # Add a dedicated section for profile statistics
         embed.add_field(name="\u200b", value="__**Account Stats**__", inline=False)  # Section header
         
-        # Profile visits
-        if profile_stats and profile_stats.get("profile_visits"):
-            embed.add_field(name="👁️ Profile Visits", value=profile_stats["profile_visits"], inline=True)
-        
-        # Group visits
-        if profile_stats and profile_stats.get("group_visits"):
-            embed.add_field(name="👥 Group Visits", value=profile_stats["group_visits"], inline=True)
-            
-        # Active players
-        if profile_stats and profile_stats.get("active_players"):
-            embed.add_field(name="🎮 Active Players", value=profile_stats["active_players"], inline=True)
-            
-        # Place visits
-        if profile_stats and profile_stats.get("place_visits"):
-            embed.add_field(name="🚶 Place Visits", value=profile_stats["place_visits"], inline=True)
+        # Always show profile statistics, even if 0
+        embed.add_field(name="👁️ Profile Visits", value=profile_stats.get("profile_visits", "0"), inline=True)
+        embed.add_field(name="👥 Group Visits", value=profile_stats.get("group_visits", "0"), inline=True)
+        embed.add_field(name="🎮 Active Players", value=profile_stats.get("active_players", "0"), inline=True)
+        embed.add_field(name="🚶 Place Visits", value=profile_stats.get("place_visits", "0"), inline=True)
         
         # Group memberships
         if groups:
@@ -523,14 +517,50 @@ class Roblox(commands.Cog):
                 
                 group_info = await response.json()
             
-            # Get more accurate member count from Roblox API
-            async with self.session.get(f"https://groups.roblox.com/v1/groups/{group_id}/membership") as response:
-                if response.status == 200:
-                    membership_data = await response.json()
-                    members_count = membership_data.get("memberCount", 0)
-                else:
-                    # Fallback to the count from group_info
-                    members_count = group_info.get("memberCount", 0)
+            # Get more accurate member count - try multiple APIs
+            members_count = 0
+            
+            # First try membership endpoint
+            try:
+                async with self.session.get(f"https://groups.roblox.com/v1/groups/{group_id}/membership") as response:
+                    if response.status == 200:
+                        membership_data = await response.json()
+                        members_count = membership_data.get("memberCount", 0)
+                        print(f"Got member count from membership API: {members_count}")
+            except Exception as e:
+                print(f"Error fetching membership data: {e}")
+            
+            # If still 0, try the main group info
+            if members_count == 0:
+                members_count = group_info.get("memberCount", 0)
+                print(f"Using member count from group info: {members_count}")
+            
+            # If still 0, try the roles API
+            if members_count == 0:
+                try:
+                    async with self.session.get(f"https://groups.roblox.com/v1/groups/{group_id}/roles") as response:
+                        if response.status == 200:
+                            roles_data = await response.json()
+                            roles = roles_data.get("roles", [])
+                            # Sum up member counts across roles if available
+                            role_counts = sum(role.get("memberCount", 0) for role in roles if "memberCount" in role)
+                            if role_counts > 0:
+                                members_count = role_counts
+                                print(f"Calculated member count from roles: {members_count}")
+                except Exception as e:
+                    print(f"Error calculating member count from roles: {e}")
+            
+            # If still 0, try one more endpoint
+            if members_count == 0:
+                try:
+                    async with self.session.get(f"https://groups.roblox.com/v2/groups/{group_id}") as response:
+                        if response.status == 200:
+                            alt_group_data = await response.json()
+                            if "memberCount" in alt_group_data:
+                                members_count = alt_group_data["memberCount"]
+                                print(f"Got member count from v2 API: {members_count}")
+                except Exception as e:
+                    print(f"Error fetching v2 group data: {e}")
             
             # Get group roles
             async with self.session.get(f"https://groups.roblox.com/v1/groups/{group_id}/roles") as response:
@@ -583,14 +613,11 @@ class Roblox(commands.Cog):
             
             # Add member count - fix the formatting error
             try:
-                if isinstance(members_count, (int, float)):
-                    formatted_count = format(members_count, ",")
-                    embed.add_field(name="👥 Members", value=formatted_count, inline=True)
-                else:
-                    embed.add_field(name="👥 Members", value=str(members_count), inline=True)
+                formatted_count = format(members_count, ",") if members_count else "0"
+                embed.add_field(name="👥 Members", value=formatted_count, inline=True)
             except Exception as e:
                 print(f"Error formatting member count: {e}")
-                embed.add_field(name="👥 Members", value=str(members_count), inline=True)
+                embed.add_field(name="👥 Members", value=str(members_count or "0"), inline=True)
             
             # Add creation date if available
             if "created" in group_info:
@@ -616,55 +643,413 @@ class Roblox(commands.Cog):
                     value=f'"{shout_text}"\n— {shout_poster} on {shout_date.strftime("%b %d, %Y")}',
                     inline=False
                 )
-            
-            # Add group roles
+
+                # Add roles information
             if roles:
-                roles_text = []
-                for role in roles:
+                # Sort roles by rank
+                roles.sort(key=lambda x: x.get("rank", 0))
+                
+                role_texts = []
+                for i, role in enumerate(roles[:7]):  # Show up to 7 roles
                     role_name = role.get("name", "Unknown")
                     role_rank = role.get("rank", 0)
-                    roles_text.append(f"{role_name} (Rank: {role_rank})")
+                    
+                    # Try to get member count for each role
+                    member_count = role.get("memberCount", "?")
+                    
+                    role_texts.append(f"Rank {role_rank}: {role_name} ({member_count} members)")
+                
+                if len(roles) > 7:
+                    role_texts.append(f"... and {len(roles) - 7} more roles")
                 
                 embed.add_field(
-                    name=f"👥 Roles ({len(roles)})",
-                    value="\n".join(roles_text[:5]) if roles_text else "None",
+                    name=f"🏅 Roles ({len(roles)})",
+                    value="\n".join(role_texts),
                     inline=False
                 )
-                
-                if len(roles) > 5:
-                    embed.add_field(name="", value=f"*and {len(roles) - 5} more roles...*", inline=False)
             
-            # Add group games if available
+            # Add games information
             if games:
-                games_text = []
-                for game in games[:3]:  # Show up to 3 games
-                    game_name = game.get("name", "Unknown Game")
-                    game_visits = game.get("placeVisits", 0)
-                    games_text.append(f"{game_name} - {game_visits:,} visits")
+                game_texts = []
+                for i, game in enumerate(games[:5]):  # Show up to 5 games
+                    game_name = game.get("name", "Unnamed Game")
+                    game_id = game.get("rootPlace", {}).get("id", 0)
+                    player_count = game.get("playerCount", 0)
+                    
+                    game_texts.append(f"🎮 [{game_name}](https://www.roblox.com/games/{game_id}) - {player_count} players")
                 
-                if games_text:
-                    embed.add_field(
-                        name=f"🎮 Group Games ({len(games)})",
-                        value="\n".join(games_text),
-                        inline=False
-                    )
+                if len(games) > 5:
+                    game_texts.append(f"... and {len(games) - 5} more games")
+                
+                embed.add_field(
+                    name=f"Games ({len(games)})",
+                    value="\n".join(game_texts) if game_texts else "No public games",
+                    inline=False
+                )
             
             # Set footer
             embed.set_footer(text=f"Roblox Group ID: {group_id}")
             
-            # Send with icon as attachment if available
+            # Add group icon
             if group_icon_bytes:
-                file = discord.File(fp=io.BytesIO(group_icon_bytes), filename="group_icon.png")
+                group_icon_file = discord.File(fp=io.BytesIO(group_icon_bytes), filename="group_icon.png")
                 embed.set_thumbnail(url="attachment://group_icon.png")
-                await interaction.followup.send(embed=embed, file=file)
+                await interaction.followup.send(embed=embed, file=group_icon_file)
             else:
-                # Fallback to URL if we couldn't download the image
+                # Fallback to direct URL if we couldn't download the image
                 if group_icon_url:
                     embed.set_thumbnail(url=group_icon_url)
                 await interaction.followup.send(embed=embed)
-        
+                
         except Exception as e:
-            await interaction.followup.send(f"An error occurred: {str(e)}")
+            print(f"Error in roblox_group_lookup: {str(e)}")
+            await interaction.followup.send(f"An error occurred while trying to fetch the group information: {str(e)}")
+    
+    @app_commands.command(name="robloxgame", description="Look up a Roblox game by ID")
+    @app_commands.describe(game_id="Roblox game/place ID")
+    async def roblox_game_lookup(self, interaction: discord.Interaction, game_id: str):
+        """Look up a Roblox game by ID"""
+        await interaction.response.defer()
+        
+        if not game_id.isdigit():
+            await interaction.followup.send("Game ID must be a number.")
+            return
+        
+        try:
+            # Get game information
+            async with self.session.get(f"https://games.roblox.com/v1/games/multiget-place-details?placeIds={game_id}") as response:
+                if response.status != 200 or not await response.json():
+                    await interaction.followup.send(f"Could not find Roblox game with ID {game_id}.")
+                    return
+                
+                places_data = await response.json()
+                if not places_data or len(places_data) == 0:
+                    await interaction.followup.send(f"Could not find Roblox game with ID {game_id}.")
+                    return
+                
+                place_info = places_data[0]
+            
+            # Get universe ID for more info
+            universe_id = place_info.get("universeId")
+            if not universe_id:
+                await interaction.followup.send(f"Could not find complete information for game with ID {game_id}.")
+                return
+            
+            # Get universe info
+            async with self.session.get(f"https://games.roblox.com/v1/games?universeIds={universe_id}") as response:
+                if response.status == 200:
+                    universe_data = await response.json()
+                    if "data" in universe_data and universe_data["data"]:
+                        game_info = universe_data["data"][0]
+                    else:
+                        game_info = {}
+                else:
+                    game_info = {}
+            
+            # Get game icon
+            game_icon_bytes = None
+            try:
+                async with self.session.get(f"https://thumbnails.roblox.com/v1/games/icons?universeIds={universe_id}&size=256x256&format=Png") as response:
+                    if response.status == 200:
+                        thumbnails_data = await response.json()
+                        if "data" in thumbnails_data and thumbnails_data["data"]:
+                            icon_url = thumbnails_data["data"][0].get("imageUrl")
+                            if icon_url:
+                                async with self.session.get(icon_url) as img_response:
+                                    if img_response.status == 200:
+                                        game_icon_bytes = await img_response.read()
+            except Exception as e:
+                print(f"Error getting game icon: {str(e)}")
+            
+            # Get game voting/favorites
+            favorites_count = game_info.get("favoritesCount", 0)
+            upvotes = game_info.get("totalUpVotes", 0)
+            downvotes = game_info.get("totalDownVotes", 0)
+            
+            # Get creator info
+            creator_name = "Unknown"
+            creator_id = 0
+            creator_type = "User"
+            creator_url = ""
+            
+            if "creator" in game_info:
+                creator_name = game_info["creator"].get("name", "Unknown")
+                creator_id = game_info["creator"].get("id", 0)
+                creator_type = game_info["creator"].get("type", "User")
+                
+                if creator_type == "User":
+                    creator_url = f"https://www.roblox.com/users/{creator_id}/profile"
+                else:  # Group
+                    creator_url = f"https://www.roblox.com/groups/{creator_id}/group"
+            
+            # Create embed
+            embed = discord.Embed(
+                title=game_info.get("name", place_info.get("name", "Unknown Game")),
+                description=game_info.get("description", "No description") or "No description",
+                color=discord.Color.from_rgb(226, 35, 26),  # Roblox red
+                timestamp=datetime.datetime.now(),
+                url=f"https://www.roblox.com/games/{game_id}"
+            )
+            
+            # Add creator info
+            embed.add_field(
+                name="Creator",
+                value=f"[{creator_name}]({creator_url}) ({creator_type})",
+                inline=True
+            )
+            
+            # Add player counts
+            playing = game_info.get("playing", 0)
+            visits = game_info.get("visits", 0)
+            
+            embed.add_field(name="👥 Playing Now", value=format(playing, ","), inline=True)
+            embed.add_field(name="🎮 Total Visits", value=format(visits, ","), inline=True)
+            
+            # Add voting info
+            if upvotes or downvotes:
+                total_votes = upvotes + downvotes
+                like_percentage = (upvotes / total_votes * 100) if total_votes > 0 else 0
+                embed.add_field(
+                    name="👍 Rating",
+                    value=f"{like_percentage:.1f}% ({format(upvotes, ',')} up, {format(downvotes, ',')} down)",
+                    inline=True
+                )
+            
+            # Add favorites
+            embed.add_field(name="⭐ Favorites", value=format(favorites_count, ","), inline=True)
+            
+            # Add creation/update dates
+            if "created" in game_info:
+                created_date = datetime.datetime.fromisoformat(game_info["created"].replace("Z", "+00:00"))
+                embed.add_field(name="📅 Created", value=created_date.strftime("%b %d, %Y"), inline=True)
+            
+            if "updated" in game_info:
+                updated_date = datetime.datetime.fromisoformat(game_info["updated"].replace("Z", "+00:00"))
+                embed.add_field(name="📝 Last Updated", value=updated_date.strftime("%b %d, %Y"), inline=True)
+            
+            # Add genre and allowed gear types
+            if "genre" in game_info:
+                embed.add_field(name="🏷️ Genre", value=game_info["genre"], inline=True)
+            
+            # Add max players
+            max_players = game_info.get("maxPlayers", 0)
+            if max_players:
+                embed.add_field(name="👨‍👩‍👧‍👦 Max Players", value=max_players, inline=True)
+            
+            # Add game age rating
+            if "gameRating" in game_info:
+                embed.add_field(name="🔞 Age Rating", value=game_info["gameRating"].get("name", "Unknown"), inline=True)
+            
+            # Add VIP servers info if available
+            if "price" in game_info:
+                vip_price = game_info["price"]
+                if vip_price == 0:
+                    vip_text = "Free"
+                else:
+                    vip_text = f"{vip_price} Robux"
+                
+                embed.add_field(name="🔑 VIP Servers", value=vip_text, inline=True)
+            
+            # Set footer
+            embed.set_footer(text=f"Game ID: {game_id} | Universe ID: {universe_id}")
+            
+            # Add game icon
+            if game_icon_bytes:
+                game_icon_file = discord.File(fp=io.BytesIO(game_icon_bytes), filename="game_icon.png")
+                embed.set_thumbnail(url="attachment://game_icon.png")
+                await interaction.followup.send(embed=embed, file=game_icon_file)
+            else:
+                # Fallback URL
+                embed.set_thumbnail(url=f"https://www.roblox.com/asset-thumbnail/image?assetId={game_id}&width=256&height=256&format=png")
+                await interaction.followup.send(embed=embed)
+                
+        except Exception as e:
+            print(f"Error in roblox_game_lookup: {str(e)}")
+            await interaction.followup.send(f"An error occurred while trying to fetch the game information: {str(e)}")
+    
+    @app_commands.command(name="robloxfriends", description="Look up a Roblox user's friends")
+    @app_commands.describe(username="Roblox username or user ID", page="Page number (default: 1)")
+    async def roblox_friends(self, interaction: discord.Interaction, username: str, page: Optional[int] = 1):
+        """Look up a Roblox user's friends"""
+        await interaction.response.defer()
+        
+        if page < 1:
+            page = 1
+        
+        user_id = None
+        
+        # Check if this is a Roblox user ID (all digits)
+        if username.isdigit():
+            user_id = int(username)
+        else:
+            # Get user ID from username
+            user_id = await self.get_user_by_username(username)
+            
+            if not user_id:
+                await interaction.followup.send(f"Could not find Roblox user with username '{username}'.")
+                return
+        
+        try:
+            # Get user information for display
+            user_info = await self.get_user_info(user_id)
+            if not user_info:
+                await interaction.followup.send(f"Could not find Roblox user with ID {user_id}.")
+                return
+            
+            # Get friends count
+            friends_count = await self.get_user_friends_count(user_id)
+            
+            # Get friends (10 per page)
+            limit = 10
+            offset = (page - 1) * limit
+            
+            async with self.session.get(f"https://friends.roblox.com/v1/users/{user_id}/friends?sortOrder=Asc&limit={limit}&offset={offset}") as response:
+                if response.status != 200:
+                    await interaction.followup.send(f"Could not fetch friends for user with ID {user_id}.")
+                    return
+                
+                friends_data = await response.json()
+                friends = friends_data.get("data", [])
+            
+            if not friends:
+                await interaction.followup.send(f"User '{user_info['name']}' has no friends or their friends list is private.")
+                return
+            
+            # Create embed
+            embed = discord.Embed(
+                title=f"Friends of {user_info['name']}",
+                description=f"Viewing page {page} of {max(1, (friends_count + limit - 1) // limit)} ({friends_count} total friends)",
+                color=discord.Color.from_rgb(226, 35, 26),  # Roblox red
+                timestamp=datetime.datetime.now(),
+                url=f"https://www.roblox.com/users/{user_id}/friends"
+            )
+            
+            # Add each friend to the embed
+            for i, friend in enumerate(friends):
+                friend_name = friend.get("name", "Unknown")
+                friend_id = friend.get("id", 0)
+                friend_display = friend.get("displayName", friend_name)
+                
+                if friend_display != friend_name:
+                    friend_text = f"@{friend_name} ({friend_display})"
+                else:
+                    friend_text = f"@{friend_name}"
+                
+                embed.add_field(
+                    name=f"Friend #{offset + i + 1}",
+                    value=f"[{friend_text}](https://www.roblox.com/users/{friend_id}/profile)",
+                    inline=True
+                )
+            
+            # Set footer
+            embed.set_footer(text=f"Use /robloxfriends {username} {page+1} to see the next page")
+            
+            # Add user avatar if available
+            avatar_bytes = await self.get_user_avatar_image(user_id)
+            if avatar_bytes:
+                avatar_file = discord.File(fp=io.BytesIO(avatar_bytes), filename="avatar.png")
+                embed.set_thumbnail(url="attachment://avatar.png")
+                await interaction.followup.send(embed=embed, file=avatar_file)
+            else:
+                embed.set_thumbnail(url=f"https://tr.rbxcdn.com/avatar/420/420/AvatarHeadshot/Png/noCache/{user_id}")
+                await interaction.followup.send(embed=embed)
+                
+        except Exception as e:
+            print(f"Error in roblox_friends: {str(e)}")
+            await interaction.followup.send(f"An error occurred while trying to fetch friends: {str(e)}")
+    
+    @app_commands.command(name="robloxoutfit", description="Look up a Roblox user's outfit/avatar")
+    @app_commands.describe(username="Roblox username or user ID")
+    async def roblox_outfit(self, interaction: discord.Interaction, username: str):
+        """Look up a Roblox user's outfit/avatar"""
+        await interaction.response.defer()
+        
+        user_id = None
+        
+        # Check if this is a Roblox user ID (all digits)
+        if username.isdigit():
+            user_id = int(username)
+        else:
+            # Get user ID from username
+            user_id = await self.get_user_by_username(username)
+            
+            if not user_id:
+                await interaction.followup.send(f"Could not find Roblox user with username '{username}'.")
+                return
+        
+        try:
+            # Get user information
+            user_info = await self.get_user_info(user_id)
+            if not user_info:
+                await interaction.followup.send(f"Could not find Roblox user with ID {user_id}.")
+                return
+            
+            # Get full avatar image
+            full_avatar_bytes = await self.get_user_full_avatar(user_id)
+            
+            # Get avatar information
+            async with self.session.get(f"https://avatar.roblox.com/v1/users/{user_id}/avatar") as response:
+                if response.status == 200:
+                    avatar_data = await response.json()
+                else:
+                    avatar_data = {}
+            
+            # Create embed
+            embed = discord.Embed(
+                title=f"{user_info['name']}'s Avatar",
+                color=discord.Color.from_rgb(226, 35, 26),  # Roblox red
+                timestamp=datetime.datetime.now(),
+                url=f"https://www.roblox.com/users/{user_id}/profile"
+            )
+            
+            # Add avatar type
+            avatar_type = avatar_data.get("playerAvatarType", "Unknown")
+            embed.add_field(name="Avatar Type", value=avatar_type, inline=True)
+            
+            # Add scales if available
+            scales = avatar_data.get("scales")
+            if scales:
+                scale_text = "\n".join([f"{key.capitalize()}: {value}" for key, value in scales.items()])
+                embed.add_field(name="Avatar Scales", value=scale_text, inline=True)
+            
+            # Add emotes count if available
+            emotes = avatar_data.get("emotes", [])
+            if emotes:
+                embed.add_field(name="Equipped Emotes", value=str(len(emotes)), inline=True)
+            
+            # Add currently wearing items
+            assets = avatar_data.get("assets", [])
+            if assets:
+                asset_names = []
+                for i, asset in enumerate(assets[:10]):  # Show up to 10 items
+                    asset_name = asset.get("name", "Unknown Item")
+                    asset_names.append(f"• {asset_name}")
+                
+                if len(assets) > 10:
+                    asset_names.append(f"... and {len(assets) - 10} more items")
+                
+                embed.add_field(
+                    name=f"Currently Wearing ({len(assets)} items)",
+                    value="\n".join(asset_names),
+                    inline=False
+                )
+            
+            # Set footer
+            embed.set_footer(text=f"Roblox User ID: {user_id}")
+            
+            # Add avatar image
+            if full_avatar_bytes:
+                avatar_file = discord.File(fp=io.BytesIO(full_avatar_bytes), filename="avatar.png")
+                embed.set_image(url="attachment://avatar.png")
+                await interaction.followup.send(embed=embed, file=avatar_file)
+            else:
+                # Fallback URL
+                embed.set_image(url=f"https://tr.rbxcdn.com/avatar/420/420/Avatar/Png/noCache/{user_id}")
+                await interaction.followup.send(embed=embed)
+                
+        except Exception as e:
+            print(f"Error in roblox_outfit: {str(e)}")
+            await interaction.followup.send(f"An error occurred while trying to fetch the outfit information: {str(e)}")
 
 async def setup(bot):
     await bot.add_cog(Roblox(bot))
