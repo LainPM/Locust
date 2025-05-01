@@ -195,17 +195,52 @@ class Roblox(commands.Cog):
             print(f"Error in get_user_groups: {str(e)}")
             return []
     
-    async def get_premium_info(self, user_id):
-        """Get user's premium membership info"""
+    async def get_profile_stats(self, user_id):
+        """Get profile visits and other stats by scraping the profile page"""
         try:
-            async with self.session.get(f"https://premiumfeatures.roblox.com/v1/users/{user_id}/validate-membership") as response:
-                if response.status == 200:
-                    data = await response.json()
-                    return data.get("isPremium", False)
-                return False
+            # Try to get the stats from the profile page
+            profile_url = f"https://www.roblox.com/users/{user_id}/profile"
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36"
+            }
+            
+            async with self.session.get(profile_url, headers=headers) as response:
+                if response.status != 200:
+                    return {
+                        "profile_visits": None,
+                        "place_visits": None,
+                        "active_players": None,
+                        "group_visits": None
+                    }
+                
+                html = await response.text()
+                
+                # Extract profile visits using regex
+                profile_visits_match = re.search(r'Profile Visits:\s*([0-9,\.KMB]+)', html)
+                place_visits_match = re.search(r'Place Visits:\s*([0-9,\.KMB]+)', html)
+                active_players_match = re.search(r'Active Players:\s*([0-9,\.KMB]+)', html)
+                group_visits_match = re.search(r'Group Visits:\s*([0-9,\.KMB]+)', html)
+                
+                profile_visits = profile_visits_match.group(1) if profile_visits_match else None
+                place_visits = place_visits_match.group(1) if place_visits_match else None
+                active_players = active_players_match.group(1) if active_players_match else None
+                group_visits = group_visits_match.group(1) if group_visits_match else None
+                
+                return {
+                    "profile_visits": profile_visits,
+                    "place_visits": place_visits,
+                    "active_players": active_players,
+                    "group_visits": group_visits
+                }
+                
         except Exception as e:
-            print(f"Error in get_premium_info: {str(e)}")
-            return False
+            print(f"Error in get_profile_stats: {str(e)}")
+            return {
+                "profile_visits": None,
+                "place_visits": None,
+                "active_players": None,
+                "group_visits": None
+            }
     
     @app_commands.command(name="roblox", description="Look up a Roblox user by username or ID")
     @app_commands.describe(username="Roblox username or user ID")
@@ -246,7 +281,8 @@ class Roblox(commands.Cog):
             self.get_user_groups(user_id),
             self.get_user_avatar_image(user_id),
             self.get_user_full_avatar(user_id),
-            self.get_premium_info(user_id)
+            self.get_premium_info(user_id),
+            self.get_profile_stats(user_id)
         ]
         
         results = await asyncio.gather(*tasks)
@@ -260,6 +296,7 @@ class Roblox(commands.Cog):
         avatar_bytes = results[7]
         full_avatar_bytes = results[8]
         is_premium = results[9]
+        profile_stats = results[10]
         
         # Create embed
         embed = discord.Embed(
@@ -372,9 +409,8 @@ class Roblox(commands.Cog):
             files.append(full_avatar_file)
             embed.set_image(url="attachment://full_avatar.png")
         
-        # Print debug info
-        print(f"Avatar image data: {'Found' if avatar_bytes else 'Not found'}")
-        print(f"Full avatar image data: {'Found' if full_avatar_bytes else 'Not found'}")
+        # Print debug info about profile stats
+        print(f"Profile stats: {profile_stats}")
         
         # Send the message with files
         if files:
