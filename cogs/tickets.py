@@ -105,129 +105,156 @@ class TicketPanelView(ui.View):
         super().__init__(timeout=None)
         self.bot = bot
         
-        # Add a button for each ticket type
-        for t in types:
-            btn = ui.Button(label=t, style=discord.ButtonStyle.primary, custom_id=f"create_{t}")
+        # Add a button for each ticket type with consistent custom_id format
+        for i, t in enumerate(types):
+            btn = ui.Button(
+                label=t, 
+                style=discord.ButtonStyle.primary, 
+                custom_id=f"ticket_system:create_{t}_{i}"  # Add index to ensure uniqueness
+            )
             btn.callback = self._on_ticket_button
             self.add_item(btn)
 
     async def _on_ticket_button(self, interaction: discord.Interaction):
         """Handle ticket creation button press"""
-        # Extract ticket type from custom_id
-        ticket_type = interaction.data['custom_id'].split('_', 1)[1]
-        
-        # Get ticket config from MongoDB
-        config = await self.bot.cogs["TicketSystem"].config_col.find_one({"guild_id": interaction.guild.id})
-        if not config:
-            await interaction.response.send_message("Ticket system not configured!", ephemeral=True)
-            return
-        
-        # Get next case number
-        case_count = await self.bot.cogs["TicketSystem"].tickets_col.count_documents({})
-        case_number = case_count + 1
-        
-        # Set up channel permissions
-        overwrites = {
-            interaction.guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True),
-            interaction.guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True)
-        }
-        
-        # Add mod role permissions
-        for role_id in config["mod_roles"]:
-            role = interaction.guild.get_role(int(role_id))
-            if role:
-                overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
-        
-        # Create the ticket channel
-        category = interaction.guild.get_channel(config["ticket_category_id"])
-        channel_name = f"{ticket_type.lower()}-{case_number}-{interaction.user.name}"
-        
         try:
-            channel = await interaction.guild.create_text_channel(
-                name=channel_name,
-                category=category,
-                overwrites=overwrites,
-                topic=f"Ticket {case_number} | Created by {interaction.user} | Type: {ticket_type}"
-            )
-        except discord.Forbidden:
-            await interaction.response.send_message("I don't have permission to create channels!", ephemeral=True)
-            return
+            # Extract ticket type from custom_id (format: "ticket_system:create_TYPE_INDEX")
+            custom_id_parts = interaction.data['custom_id'].split('_')
+            ticket_type = custom_id_parts[2]  # Get the ticket type part
+            
+            # Use a try block for the entire ticket creation process
+            try:
+                # Defer response to prevent timeout during channel creation
+                await interaction.response.defer(ephemeral=True)
+                
+                # Get ticket config from MongoDB
+                config = await self.bot.cogs["TicketSystem"].config_col.find_one({"guild_id": interaction.guild.id})
+                if not config:
+                    await interaction.followup.send("Ticket system not configured!", ephemeral=True)
+                    return
+                
+                # Get next case number
+                case_count = await self.bot.cogs["TicketSystem"].tickets_col.count_documents({})
+                case_number = case_count + 1
+                
+                # Set up channel permissions
+                overwrites = {
+                    interaction.guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                    interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True),
+                    interaction.guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True)
+                }
+                
+                # Add mod role permissions
+                for role_id in config["mod_roles"]:
+                    role = interaction.guild.get_role(int(role_id))
+                    if role:
+                        overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+                
+                # Create the ticket channel
+                category = interaction.guild.get_channel(config["ticket_category_id"])
+                # Safe channel name - remove invalid characters
+                safe_username = ''.join(c for c in interaction.user.name if c.isalnum() or c in '-_')
+                channel_name = f"{ticket_type.lower()}-{case_number}-{safe_username}"
+                if len(channel_name) > 100:  # Discord channel name length limit
+                    channel_name = channel_name[:100]
+                
+                channel = await interaction.guild.create_text_channel(
+                    name=channel_name,
+                    category=category,
+                    overwrites=overwrites,
+                    topic=f"Ticket {case_number} | Created by {interaction.user} | Type: {ticket_type}"
+                )
+                
+                # Store ticket in MongoDB
+                timestamp = datetime.utcnow()
+                await self.bot.cogs["TicketSystem"].tickets_col.insert_one({
+                    "guild_id": interaction.guild.id,
+                    "channel_id": channel.id,
+                    "user_id": interaction.user.id,
+                    "case_number": case_number,
+                    "ticket_type": ticket_type,
+                    "status": "open",
+                    "created_at": timestamp,
+                    "updated_at": timestamp,
+                    "users_involved": [interaction.user.id],
+                    "message_count": 0,
+                    "attachments_saved": 0,
+                    "attachments_skipped": 0
+                })
+                
+                # Create ticket message with buttons
+                embed = discord.Embed(
+                    title=f"Ticket {case_number}: {ticket_type}",
+                    description=f"Thank you for creating a ticket, {interaction.user.mention}. A staff member will be with you shortly.",
+                    color=discord.Color.green(),
+                    timestamp=timestamp
+                )
+                embed.add_field(name="Case ID", value=str(case_number), inline=True)
+                embed.add_field(name="Status", value="Open", inline=True)
+                embed.add_field(name="Created By", value=interaction.user.mention, inline=True)
+                embed.set_footer(text=f"Ticket ID: {channel.id}")
+                
+                view = OpenTicketView(self.bot)
+                initial_message = await channel.send(
+                    content=f"{interaction.user.mention} Welcome to your ticket!",
+                    embed=embed,
+                    view=view
+                )
+                
+                # Pin the initial message
+                try:
+                    await initial_message.pin()
+                except Exception as e:
+                    print(f"Error pinning message: {e}")
+                
+                # Add view to bot's persistent views
+                self.bot.add_view(view, message_id=initial_message.id)
+                
+                # Send confirmation to user
+                await interaction.followup.send(
+                    f"Ticket created: {channel.mention}\nCase ID: {case_number}",
+                    ephemeral=True
+                )
+                
+            except discord.Forbidden:
+                await interaction.followup.send("I don't have permission to create channels!", ephemeral=True)
+            except discord.HTTPException as e:
+                await interaction.followup.send(f"Error creating ticket: {e}", ephemeral=True)
+            except Exception as e:
+                print(f"Unexpected error creating ticket: {e}")
+                await interaction.followup.send("An unexpected error occurred. Please try again or contact an administrator.", ephemeral=True)
+                
         except Exception as e:
-            await interaction.response.send_message(f"Error creating channel: {e}", ephemeral=True)
-            return
-        
-        # Store ticket in MongoDB
-        timestamp = datetime.utcnow()
-        await self.bot.cogs["TicketSystem"].tickets_col.insert_one({
-            "guild_id": interaction.guild.id,
-            "channel_id": channel.id,
-            "user_id": interaction.user.id,
-            "case_number": case_number,
-            "ticket_type": ticket_type,
-            "status": "open",
-            "created_at": timestamp,
-            "updated_at": timestamp,
-            "users_involved": [interaction.user.id],
-            "message_count": 0,
-            "attachments_saved": 0,
-            "attachments_skipped": 0
-        })
-        
-        # Create ticket message with buttons
-        embed = discord.Embed(
-            title=f"Ticket {case_number}: {ticket_type}",
-            description=f"Thank you for creating a ticket, {interaction.user.mention}. A staff member will be with you shortly.",
-            color=discord.Color.green(),
-            timestamp=timestamp
-        )
-        embed.add_field(name="Case ID", value=str(case_number), inline=True)
-        embed.add_field(name="Status", value="Open", inline=True)
-        embed.add_field(name="Created By", value=interaction.user.mention, inline=True)
-        embed.set_footer(text=f"Ticket ID: {channel.id}")
-        
-        view = OpenTicketView(self.bot)
-        initial_message = await channel.send(
-            content=f"{interaction.user.mention} Welcome to your ticket!",
-            embed=embed,
-            view=view
-        )
-        
-        # Pin the initial message
-        await initial_message.pin()
-        
-        # Add view to bot's persistent views
-        self.bot.add_view(view, message_id=initial_message.id)
-        
-        # Send confirmation to user
-        await interaction.response.send_message(
-            f"Ticket created: {channel.mention}\nCase ID: {case_number}",
-            ephemeral=True
-        )
+            # Catch any errors in the button handler itself
+            print(f"Error in ticket button handler: {e}")
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message("An error occurred. Please try again.", ephemeral=True)
+            except:
+                pass  # If we can't respond, just continue
 
 class OpenTicketView(ui.View):
     def __init__(self, bot):
         super().__init__(timeout=None)
         self.bot = bot
         
-        # Close ticket button
-        close_btn = ui.Button(
-            label="Close Ticket",
-            style=discord.ButtonStyle.danger,
-            custom_id="close_ticket",
+        # Use a custom_id that includes "close_ticket" to make it persistent
+        btn = ui.Button(
+            label="Close Ticket", 
+            style=discord.ButtonStyle.danger, 
+            custom_id="ticket_system:close_ticket",
             emoji="🔒"
         )
-        close_btn.callback = self._on_close
-        self.add_item(close_btn)
+        btn.callback = self._on_close
+        self.add_item(btn)
 
     async def _on_close(self, interaction: discord.Interaction):
         """Handle ticket closing button press"""
-        # Use simpler direct approach rather than modal for reopened tickets
-        # This fixes the issue where nothing happens when closing after reopening
+        # Get the channel and guild data
         channel = interaction.channel
         guild_id = interaction.guild.id
         
-        # Get the ticket data first
+        # Check if ticket exists in database
         ticket_data = await self.bot.cogs["TicketSystem"].tickets_col.find_one(
             {"guild_id": guild_id, "channel_id": channel.id}
         )
@@ -238,74 +265,16 @@ class OpenTicketView(ui.View):
                 ephemeral=True
             )
             return
-            
-        # Check if this is a reopened ticket (has been closed before)
-        if ticket_data.get("reopened_by") is not None:
-            # For reopened tickets, skip the modal and close directly
-            await interaction.response.defer(ephemeral=False)
-            
-            # Update ticket status in MongoDB
-            timestamp = datetime.utcnow()
-            close_reason = "Ticket closed after reopening"
-            
-            await self.bot.cogs["TicketSystem"].tickets_col.update_one(
-                {"guild_id": guild_id, "channel_id": channel.id},
-                {"$set": {
-                    "status": "closed",
-                    "updated_at": timestamp,
-                    "closed_by": interaction.user.id,
-                    "close_reason": close_reason
-                }}
-            )
-            
-            # Rename channel if needed
-            if not channel.name.endswith("-closed"):
-                try:
-                    new_name = f"{channel.name}-closed"
-                    await channel.edit(name=new_name)
-                except Exception as e:
-                    print(f"Error renaming channel: {e}")
-            
-            # Remove permissions from ticket creator
-            creator_id = ticket_data.get("user_id")
-            if creator_id:
-                creator = interaction.guild.get_member(creator_id)
-                if creator:
-                    try:
-                        await channel.set_permissions(creator, send_messages=False)
-                    except Exception as e:
-                        print(f"Error updating permissions: {e}")
-            
-            # Send closed message with buttons
-            embed = discord.Embed(
-                title=f"Ticket {ticket_data.get('case_number')} Closed",
-                description=f"This ticket has been closed by {interaction.user.mention}",
-                color=discord.Color.red(),
-                timestamp=timestamp
-            )
-            embed.add_field(name="Reason", value=close_reason, inline=False)
-            
-            view = ClosedTicketView(self.bot)
-            
-            try:
-                message = await interaction.followup.send(
-                    embed=embed,
-                    view=view,
-                    ephemeral=False
-                )
-                # Register the view
-                self.bot.add_view(view, message_id=message.id)
-            except Exception as e:
-                print(f"Error sending followup: {e}")
-                # Fallback to channel.send
-                message = await channel.send(
-                    embed=embed,
-                    view=view
-                )
-                self.bot.add_view(view, message_id=message.id)
-        else:
-            # For first-time close, use the modal as before
+        
+        # For all tickets, use the modal
+        try:
             await interaction.response.send_modal(CloseModal(self.bot))
+        except Exception as e:
+            print(f"Error sending modal: {e}")
+            await interaction.response.send_message(
+                "There was an error processing your request. Please try again.",
+                ephemeral=True
+            )
 
 class CloseModal(ui.Modal, title="Close Ticket"):
     def __init__(self, bot):
@@ -417,29 +386,29 @@ class ClosedTicketView(ui.View):
         super().__init__(timeout=None)
         self.bot = bot
         
-        # Generate transcript button
+        # Generate transcript button with consistent custom ID
         transcript_btn = ui.Button(
             label="Generate Transcript",
             style=discord.ButtonStyle.primary,
-            custom_id="gen_transcript",
+            custom_id="ticket_system:gen_transcript",
             emoji="📝"
         )
         transcript_btn.callback = self._gen_transcript
         
-        # Delete ticket button
+        # Delete ticket button with consistent custom ID
         delete_btn = ui.Button(
             label="Delete Ticket",
             style=discord.ButtonStyle.danger,
-            custom_id="delete_ticket",
+            custom_id="ticket_system:delete_ticket",
             emoji="🗑️"
         )
         delete_btn.callback = self._delete_ticket
         
-        # Reopen ticket button
+        # Reopen ticket button with consistent custom ID
         reopen_btn = ui.Button(
             label="Reopen Ticket",
             style=discord.ButtonStyle.success,
-            custom_id="reopen_ticket",
+            custom_id="ticket_system:reopen_ticket",
             emoji="🔓"
         )
         reopen_btn.callback = self._reopen_ticket
