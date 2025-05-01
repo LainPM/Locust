@@ -5,6 +5,7 @@ from discord import app_commands
 import aiohttp
 import asyncio
 import datetime
+import re
 from typing import Optional
 import io
 
@@ -126,26 +127,6 @@ class Roblox(commands.Cog):
         except Exception as e:
             print(f"Error in get_user_full_avatar: {str(e)}")
             return None
-    
-    async def get_user_badges(self, user_id):
-        """Get count of user's badges"""
-        try:
-            # First, try the v1 API endpoint
-            async with self.session.get(f"https://badges.roblox.com/v1/users/{user_id}/badges?limit=10&sortOrder=Asc") as response:
-                if response.status == 200:
-                    data = await response.json()
-                    return data.get("totalCount", 0)
-                
-                # If that fails, try the older API endpoint
-                async with self.session.get(f"https://www.roblox.com/badges/roblox?userId={user_id}&limit=10") as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        return len(data.get("RobloxBadges", [])) or 0
-                
-                return 0
-        except Exception as e:
-            print(f"Error in get_user_badges: {str(e)}")
-            return 0
     
     async def get_user_friends_count(self, user_id):
         """Get count of user's friends"""
@@ -371,6 +352,9 @@ class Roblox(commands.Cog):
         is_premium = results[8]
         profile_stats = results[9]
         
+        # Print debug info about profile stats
+        print(f"Profile stats: {profile_stats}")
+        
         # Create embed
         embed = discord.Embed(
             title=f"Roblox User: {user_info['name']}",
@@ -437,11 +421,40 @@ class Roblox(commands.Cog):
         if status and status.get("status"):
             embed.add_field(name="Status", value=status["status"], inline=False)
         
-        # Add social statistics
-        embed.add_field(name="Friends", value=f"{friends_count:,}", inline=True)
-        embed.add_field(name="Followers", value=f"{followers_count:,}", inline=True)
-        embed.add_field(name="Following", value=f"{following_count:,}", inline=True)
-        embed.add_field(name="Badges", value=f"{badges_count:,}", inline=True)
+        # Add social statistics with safe formatting
+        try:
+            embed.add_field(name="Friends", value=format(friends_count, ","), inline=True)
+        except:
+            embed.add_field(name="Friends", value=str(friends_count), inline=True)
+            
+        try:
+            embed.add_field(name="Followers", value=format(followers_count, ","), inline=True)
+        except:
+            embed.add_field(name="Followers", value=str(followers_count), inline=True)
+            
+        try:
+            embed.add_field(name="Following", value=format(following_count, ","), inline=True)
+        except:
+            embed.add_field(name="Following", value=str(following_count), inline=True)
+        
+        # Add a dedicated section for profile statistics
+        embed.add_field(name="\u200b", value="__**Account Stats**__", inline=False)  # Section header
+        
+        # Profile visits
+        if profile_stats and profile_stats.get("profile_visits"):
+            embed.add_field(name="👁️ Profile Visits", value=profile_stats["profile_visits"], inline=True)
+        
+        # Group visits
+        if profile_stats and profile_stats.get("group_visits"):
+            embed.add_field(name="👥 Group Visits", value=profile_stats["group_visits"], inline=True)
+            
+        # Active players
+        if profile_stats and profile_stats.get("active_players"):
+            embed.add_field(name="🎮 Active Players", value=profile_stats["active_players"], inline=True)
+            
+        # Place visits
+        if profile_stats and profile_stats.get("place_visits"):
+            embed.add_field(name="🚶 Place Visits", value=profile_stats["place_visits"], inline=True)
         
         # Group memberships
         if groups:
@@ -482,9 +495,6 @@ class Roblox(commands.Cog):
             files.append(full_avatar_file)
             embed.set_image(url="attachment://full_avatar.png")
         
-        # Print debug info about profile stats
-        print(f"Profile stats: {profile_stats}")
-        
         # Send the message with files
         if files:
             await interaction.followup.send(embed=embed, files=files)
@@ -517,10 +527,10 @@ class Roblox(commands.Cog):
             async with self.session.get(f"https://groups.roblox.com/v1/groups/{group_id}/membership") as response:
                 if response.status == 200:
                     membership_data = await response.json()
-                    members_count = membership_data.get("memberCount", "Unknown")
+                    members_count = membership_data.get("memberCount", 0)
                 else:
                     # Fallback to the count from group_info
-                    members_count = group_info.get("memberCount", "Unknown")
+                    members_count = group_info.get("memberCount", 0)
             
             # Get group roles
             async with self.session.get(f"https://groups.roblox.com/v1/groups/{group_id}/roles") as response:
