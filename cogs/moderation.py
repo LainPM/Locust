@@ -10,9 +10,13 @@ class PaginationView(ui.View):
         self.mod_logs = mod_logs
         self.logs_per_page = logs_per_page
         self.current_page = 1
-        self.max_pages = ((len(mod_logs) - 1) // logs_per_page) + 1
+        self.max_pages = max(1, ((len(mod_logs) - 1) // logs_per_page) + 1)  # Ensure at least 1 page
         self.target_user = target_user  # Store user name
         self.user_id = user_id  # Store user ID
+        
+        # Disable next button if only one page
+        if self.max_pages <= 1:
+            self.next_button.disabled = True
 
     @ui.button(label="Previous", style=discord.ButtonStyle.secondary, disabled=True)
     async def previous_button(self, interaction: discord.Interaction, button: ui.Button):
@@ -31,7 +35,7 @@ class PaginationView(ui.View):
     async def next_button(self, interaction: discord.Interaction, button: ui.Button):
         self.current_page += 1
         # Disable next button if we're on the last page
-        if self.current_page == self.max_pages:
+        if self.current_page >= self.max_pages:
             button.disabled = True
         # Enable previous button if it was disabled
         self.previous_button.disabled = False
@@ -189,11 +193,9 @@ class Moderation(commands.Cog):
         
         try:
             await user.timeout(timeout_duration, reason=reason)
-            embed = self.create_mod_embed("Mute", user, interaction.user, reason)
-            embed.add_field(name="Duration", value=f"{duration} minutes", inline=False)
             
-            # Log the action to database
-            await self.log_mod_action(
+            # Log the action to database and get case ID
+            case_id = await self.log_mod_action(
                 guild_id=interaction.guild.id,
                 user_id=user.id,
                 moderator_id=interaction.user.id,
@@ -202,6 +204,30 @@ class Moderation(commands.Cog):
                 duration=duration
             )
             
+            # Create embed with case ID
+            embed = self.create_mod_embed("Mute", user, interaction.user, reason)
+            embed.add_field(name="Duration", value=f"{duration} minutes", inline=False)
+            embed.add_field(name="Case ID", value=f"#{case_id}", inline=False)
+            
+            # Try to send DM to user with case ID
+            try:
+                dm_embed = discord.Embed(
+                    title=f"You were muted in {interaction.guild.name}",
+                    description=f"You have been muted for {duration} minutes.",
+                    color=discord.Color.from_rgb(255, 0, 0),  # Red color
+                    timestamp=datetime.datetime.now()
+                )
+                dm_embed.add_field(name="Reason", value=reason or "No reason provided", inline=False)
+                dm_embed.add_field(name="Muted by", value=interaction.user.display_name, inline=False)
+                dm_embed.add_field(name="Case ID", value=f"#{case_id}", inline=False)
+                dm_embed.set_thumbnail(url=interaction.guild.icon.url if interaction.guild.icon else None)
+                dm_embed.set_footer(text=f"Server ID: {interaction.guild.id}")
+                
+                await user.send(embed=dm_embed)
+            except discord.Forbidden:
+                # If DM fails, add note to channel embed
+                await interaction.followup.send(f"Note: Could not DM {user.mention} about this mute.", ephemeral=True)
+                
             await interaction.response.send_message(embed=embed)
         except discord.Forbidden:
             await interaction.response.send_message("I don't have permission to timeout this user!", ephemeral=True)
@@ -238,7 +264,16 @@ class Moderation(commands.Cog):
             # Remove timeout by setting it to None
             await user.timeout(None, reason=reason)
             
-            # Create embed
+            # Log the action to database and get case ID
+            case_id = await self.log_mod_action(
+                guild_id=interaction.guild.id,
+                user_id=user.id,
+                moderator_id=interaction.user.id,
+                action_type="unmute",
+                reason=reason
+            )
+            
+            # Create embed with case ID
             embed = discord.Embed(
                 title="User Unmuted",
                 description=f"{user.mention} has been unmuted.",
@@ -247,17 +282,28 @@ class Moderation(commands.Cog):
             )
             embed.add_field(name="Reason", value=reason or "No reason provided", inline=False)
             embed.add_field(name="Unmuted by", value=interaction.user.mention, inline=False)
+            embed.add_field(name="Case ID", value=f"#{case_id}", inline=False)
             embed.set_thumbnail(url=user.display_avatar.url)
             embed.set_footer(text=f"User ID: {user.id}")
             
-            # Log the action to database
-            await self.log_mod_action(
-                guild_id=interaction.guild.id,
-                user_id=user.id,
-                moderator_id=interaction.user.id,
-                action_type="unmute",
-                reason=reason
-            )
+            # Try to send DM to user with case ID
+            try:
+                dm_embed = discord.Embed(
+                    title=f"You were unmuted in {interaction.guild.name}",
+                    description=f"Your timeout has been removed.",
+                    color=discord.Color.from_rgb(0, 255, 0),  # Green color
+                    timestamp=datetime.datetime.now()
+                )
+                dm_embed.add_field(name="Reason", value=reason or "No reason provided", inline=False)
+                dm_embed.add_field(name="Unmuted by", value=interaction.user.display_name, inline=False)
+                dm_embed.add_field(name="Case ID", value=f"#{case_id}", inline=False)
+                dm_embed.set_thumbnail(url=interaction.guild.icon.url if interaction.guild.icon else None)
+                dm_embed.set_footer(text=f"Server ID: {interaction.guild.id}")
+                
+                await user.send(embed=dm_embed)
+            except discord.Forbidden:
+                # If DM fails, add note to channel embed
+                await interaction.followup.send(f"Note: Could not DM {user.mention} about this unmute.", ephemeral=True)
             
             await interaction.response.send_message(embed=embed)
         except discord.Forbidden:
@@ -288,17 +334,40 @@ class Moderation(commands.Cog):
             return await interaction.response.send_message("You cannot kick someone with a higher or equal role!", ephemeral=True)
         
         try:
-            await user.kick(reason=reason)
-            embed = self.create_mod_embed("Kick", user, interaction.user, reason)
-            
-            # Log the action to database
-            await self.log_mod_action(
+            # Try to send DM to user before kicking with case ID (need to create case first)
+            # Log the action to database and get case ID
+            case_id = await self.log_mod_action(
                 guild_id=interaction.guild.id,
                 user_id=user.id,
                 moderator_id=interaction.user.id,
                 action_type="kick",
                 reason=reason
             )
+            
+            # Try to DM the user before kicking
+            try:
+                dm_embed = discord.Embed(
+                    title=f"You were kicked from {interaction.guild.name}",
+                    description="You have been kicked from the server.",
+                    color=discord.Color.from_rgb(255, 0, 0),  # Red color
+                    timestamp=datetime.datetime.now()
+                )
+                dm_embed.add_field(name="Reason", value=reason or "No reason provided", inline=False)
+                dm_embed.add_field(name="Kicked by", value=interaction.user.display_name, inline=False)
+                dm_embed.add_field(name="Case ID", value=f"#{case_id}", inline=False)
+                dm_embed.set_thumbnail(url=interaction.guild.icon.url if interaction.guild.icon else None)
+                
+                await user.send(embed=dm_embed)
+            except Exception:
+                # If DM fails, continue with kick
+                pass
+            
+            # Now kick the user
+            await user.kick(reason=reason)
+            
+            # Create embed with case ID for server
+            embed = self.create_mod_embed("Kick", user, interaction.user, reason)
+            embed.add_field(name="Case ID", value=f"#{case_id}", inline=False)
             
             await interaction.response.send_message(embed=embed)
         except discord.Forbidden:
@@ -334,13 +403,8 @@ class Moderation(commands.Cog):
         delete_days = max(0, min(delete_days, 7))
         
         try:
-            await user.ban(delete_message_days=delete_days, reason=reason)
-            embed = self.create_mod_embed("Ban", user, interaction.user, reason)
-            if delete_days > 0:
-                embed.add_field(name="Message Deletion", value=f"Deleted messages from the past {delete_days} days", inline=False)
-            
-            # Log the action to database
-            await self.log_mod_action(
+            # Log the action to database and get case ID
+            case_id = await self.log_mod_action(
                 guild_id=interaction.guild.id,
                 user_id=user.id,
                 moderator_id=interaction.user.id,
@@ -348,6 +412,33 @@ class Moderation(commands.Cog):
                 reason=reason,
                 delete_days=delete_days
             )
+            
+            # Try to DM the user before banning
+            try:
+                dm_embed = discord.Embed(
+                    title=f"You were banned from {interaction.guild.name}",
+                    description="You have been banned from the server.",
+                    color=discord.Color.from_rgb(255, 0, 0),  # Red color
+                    timestamp=datetime.datetime.now()
+                )
+                dm_embed.add_field(name="Reason", value=reason or "No reason provided", inline=False)
+                dm_embed.add_field(name="Banned by", value=interaction.user.display_name, inline=False)
+                dm_embed.add_field(name="Case ID", value=f"#{case_id}", inline=False)
+                dm_embed.set_thumbnail(url=interaction.guild.icon.url if interaction.guild.icon else None)
+                
+                await user.send(embed=dm_embed)
+            except Exception:
+                # If DM fails, continue with ban
+                pass
+            
+            # Now ban the user
+            await user.ban(delete_message_days=delete_days, reason=reason)
+            
+            # Create embed for server with case ID
+            embed = self.create_mod_embed("Ban", user, interaction.user, reason)
+            if delete_days > 0:
+                embed.add_field(name="Message Deletion", value=f"Deleted messages from the past {delete_days} days", inline=False)
+            embed.add_field(name="Case ID", value=f"#{case_id}", inline=False)
             
             await interaction.response.send_message(embed=embed)
         except discord.Forbidden:
@@ -373,8 +464,8 @@ class Moderation(commands.Cog):
         if user.top_role >= interaction.user.top_role and interaction.user.id != interaction.guild.owner_id:
             return await interaction.response.send_message("You cannot warn someone with a higher or equal role!", ephemeral=True)
         
-        # Use the log_mod_action helper function 
-        await self.log_mod_action(
+        # Add warning to MongoDB and get case ID
+        case_id = await self.log_mod_action(
             guild_id=interaction.guild.id,
             user_id=user.id,
             moderator_id=interaction.user.id,
@@ -389,7 +480,7 @@ class Moderation(commands.Cog):
             "action_type": "warn"
         })
         
-        # Create warning embed for channel
+        # Create warning embed for channel with case ID
         embed = discord.Embed(
             title="User Warned",
             description=f"{user.mention} has been warned.",
@@ -399,13 +490,14 @@ class Moderation(commands.Cog):
         embed.add_field(name="Reason", value=reason, inline=False)
         embed.add_field(name="Warned by", value=interaction.user.mention, inline=False)
         embed.add_field(name="Warning Count", value=str(warning_count), inline=False)
+        embed.add_field(name="Case ID", value=f"#{case_id}", inline=False)
         embed.set_thumbnail(url=user.display_avatar.url)
         embed.set_footer(text=f"User ID: {user.id}")
         
         # Send embed to channel
         await interaction.response.send_message(embed=embed)
         
-        # Create DM embed
+        # Create DM embed with case ID
         dm_embed = discord.Embed(
             title=f"Warning from {interaction.guild.name}",
             description=f"You have been warned by {interaction.user.display_name}.",
@@ -414,6 +506,7 @@ class Moderation(commands.Cog):
         )
         dm_embed.add_field(name="Reason", value=reason, inline=False)
         dm_embed.add_field(name="Warning Count", value=str(warning_count), inline=False)
+        dm_embed.add_field(name="Case ID", value=f"#{case_id}", inline=False)
         dm_embed.set_thumbnail(url=interaction.guild.icon.url if interaction.guild.icon else None)
         dm_embed.set_footer(text=f"Server ID: {interaction.guild.id}")
         
@@ -542,14 +635,7 @@ class Moderation(commands.Cog):
                 embed.set_thumbnail(url=banned_user.avatar.url)
             embed.set_footer(text=f"User ID: {banned_user.id}")
             
-            # Log the action to database
-            await self.log_mod_action(
-                guild_id=interaction.guild.id,
-                user_id=banned_user.id,
-                moderator_id=interaction.user.id,
-                action_type="unban",
-                reason=reason
-            )
+            # We don't log unbans to the user's modlogs as requested
             
             await interaction.response.send_message(embed=embed)
         except discord.Forbidden:
@@ -587,16 +673,7 @@ class Moderation(commands.Cog):
             "user_id": user_id
         })
         
-        # Log this action
-        case_id = await self.log_mod_action(
-            guild_id=guild_id,
-            user_id=user_id,
-            moderator_id=interaction.user.id,
-            action_type="clearmodlogs",
-            reason=f"Cleared {log_count} moderation logs"
-        )
-        
-        # Create embed
+        # Create embed - NOT logging this action to modlogs
         embed = discord.Embed(
             title="Moderation Logs Cleared",
             description=f"Cleared {log_count} moderation logs for {user.mention}.",
@@ -604,7 +681,6 @@ class Moderation(commands.Cog):
             timestamp=datetime.datetime.now()
         )
         embed.add_field(name="Cleared by", value=interaction.user.mention, inline=False)
-        embed.add_field(name="Case ID", value=f"#{case_id}", inline=False)
         embed.set_thumbnail(url=user.display_avatar.url)
         embed.set_footer(text=f"User ID: {user.id}")
         
@@ -647,16 +723,7 @@ class Moderation(commands.Cog):
         user = interaction.guild.get_member(user_id) if user_id else None
         user_mention = user.mention if user else f"User ID: {user_id}"
         
-        # Log this action
-        new_case_id = await self.log_mod_action(
-            guild_id=guild_id,
-            user_id=user_id if user_id else 0,
-            moderator_id=interaction.user.id,
-            action_type="removecase",
-            reason=f"Removed case #{case_id} ({action_type})"
-        )
-        
-        # Create embed
+        # Create embed - NOT logging this action to modlogs
         embed = discord.Embed(
             title="Case Removed",
             description=f"Case #{case_id} has been removed.",
@@ -666,7 +733,6 @@ class Moderation(commands.Cog):
         embed.add_field(name="User", value=user_mention, inline=False)
         embed.add_field(name="Action Type", value=action_type.title(), inline=False)
         embed.add_field(name="Removed by", value=interaction.user.mention, inline=False)
-        embed.add_field(name="New Case ID", value=f"#{new_case_id}", inline=False)
         embed.set_footer(text=f"Guild ID: {guild_id}")
         
         await interaction.response.send_message(embed=embed)
