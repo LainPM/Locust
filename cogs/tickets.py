@@ -73,7 +73,7 @@ class TicketSystem(commands.Cog):
         types = [t.strip() for t in ticket_types.split(',')]
         view = TicketPanelView(types)
         message = await ticket_panel.send(embed=embed, view=view)
-        # Register persistent view for button interactions
+        # Register persistent view
         self.bot.add_view(view, message_id=message.id)
         await interaction.response.send_message("Ticket system set up successfully!", ephemeral=True)
 
@@ -81,28 +81,25 @@ class TicketPanelView(ui.View):
     def __init__(self, types):
         super().__init__(timeout=None)
         for t in types:
-            self.add_item(ui.Button(label=t, style=discord.ButtonStyle.primary, custom_id=f"create_{t}"))
-
-    @ui.button(label='dummy', style=discord.ButtonStyle.secondary, disabled=True, custom_id='dummy')
-    async def _noop(self, interaction: discord.Interaction, button: ui.Button):
-        pass
+            button = ui.Button(label=t, style=discord.ButtonStyle.primary, custom_id=f"create_{t}")
+            button.callback = self._on_ticket_button
+            self.add_item(button)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        gid = interaction.guild.id
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute('SELECT ticket_panel_id FROM config WHERE guild_id=?', (gid,))
-        row = c.fetchone()
+        c.execute('SELECT ticket_panel_id FROM config WHERE guild_id=?', (interaction.guild.id,))
+        exists = c.fetchone() is not None
         conn.close()
-        if not row:
+        if not exists:
             await interaction.response.send_message("Ticket system not configured.", ephemeral=True)
             return False
         return True
 
-    @ui.button(style=discord.ButtonStyle.primary, custom_id=lambda self, b: b.custom_id)
-    async def handle_ticket_creation(self, interaction: discord.Interaction, button: ui.Button):
-        # Called for all ticket-type buttons
-        ttype = button.label
+    async def _on_ticket_button(self, interaction: discord.Interaction):
+        # Dispatch ticket creation
+        custom = interaction.data['custom_id']  # e.g. create_Support
+        ttype = custom.replace('create_', '')
         await self.create_ticket(interaction, ttype)
 
     async def create_ticket(self, interaction: discord.Interaction, ttype: str):
@@ -141,21 +138,20 @@ class TicketPanelView(ui.View):
         )
         view = TicketActionView()
         ticket_msg = await channel.send(f"{interaction.user.mention}", embed=embed, view=view)
-        # Register persistent action view
-        self.bot.add_view(view, message_id=ticket_msg.id)
+        # Register for persistence
+        self.view_timeout = None  # ensure persistent
+        interaction.client.add_view(view, message_id=ticket_msg.id)
 
         await interaction.response.send_message(f"Ticket created: {channel.mention}", ephemeral=True)
 
 class TicketActionView(ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-        self.add_item(ui.Button(label="Close Ticket", style=discord.ButtonStyle.danger, custom_id="close_ticket"))
+        button = ui.Button(label="Close Ticket", style=discord.ButtonStyle.danger, custom_id="close_ticket")
+        button.callback = self._on_close
+        self.add_item(button)
 
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        return True
-
-    @ui.button(label="Close Ticket", style=discord.ButtonStyle.danger, custom_id="close_ticket")
-    async def close_button(self, interaction: discord.Interaction, button: ui.Button):
+    async def _on_close(self, interaction: discord.Interaction):
         await interaction.response.send_modal(CloseModal())
 
 class CloseModal(ui.Modal, title="Close Ticket"):  # type: ignore
@@ -164,7 +160,7 @@ class CloseModal(ui.Modal, title="Close Ticket"):  # type: ignore
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.send_message("Ticket is closing and transcript will be generated shortly.", ephemeral=False)
         channel = interaction.channel
-        # Gather config
+
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute('SELECT transcript_channel_id FROM config WHERE guild_id=?', (interaction.guild.id,))
@@ -174,23 +170,17 @@ class CloseModal(ui.Modal, title="Close Ticket"):  # type: ignore
 
         messages = [msg async for msg in channel.history(limit=None, oldest_first=True)]
         msg_count = len(messages)
-
         att_saved = sum(1 for m in messages for att in m.attachments if att.size <= 8*1024*1024)
         att_skipped = sum(1 for m in messages for att in m.attachments if att.size > 8*1024*1024)
-
         user_counts = {}
         for m in messages:
             uid = m.author.id
-            user_counts.setdefault(uid, {'user': m.author, 'count': 0})
+            if uid not in user_counts:
+                user_counts[uid] = {'user': m.author, 'count': 0}
             user_counts[uid]['count'] += 1
 
         html = "<html><body><pre>"
-        html += "<Server-Info>\n"
-        html += f"    Server: {interaction.guild.name} ({interaction.guild.id})\n"
-        html += f"    Channel: {channel.name} ({channel.id})\n"
-        html += f"    Messages: {msg_count}\n"
-        html += f"    Attachments Saved: {att_saved}\n"
-        html += f"    Attachments Skipped: {att_skipped}\n\n"
+        html += f"<Server-Info>\n    Server: {interaction.guild.name} ({interaction.guild.id})\n    Channel: {channel.name} ({channel.id})\n    Messages: {msg_count}\n    Attachments Saved: {att_saved}\n    Attachments Skipped: {att_skipped}\n\n"
         html += "<User-Info>\n"
         for i, data in enumerate(user_counts.values(), 1):
             user = data['user']
@@ -200,8 +190,7 @@ class CloseModal(ui.Modal, title="Close Ticket"):  # type: ignore
             t = m.created_at.strftime('%Y-%m-%d %H:%M')
             content = m.content.replace('<', '&lt;').replace('>', '&gt;')
             html += f"[{t}] {m.author}: {content}\n"
-        html += f"\nClosed by {interaction.user} for reason: {self.reason.value}\n"
-        html += "</pre></body></html>"
+        html += f"\nClosed by {interaction.user} for reason: {self.reason.value}\n</pre></body></html>"
 
         data = io.BytesIO(html.encode('utf-8'))
         sent = await transcript_chan.send(file=discord.File(data, filename=f"transcript-{channel.id}.html"))
