@@ -79,24 +79,50 @@ class Roblox(commands.Cog):
     
     async def get_user_avatar_image(self, user_id):
         """Get user's avatar image as bytes"""
-        avatar_url = f"https://www.roblox.com/avatar-thumbnail/image?userId={user_id}&width=420&height=420&format=png"
+        # Try the thumbnails API first
         try:
+            async with self.session.get(f"https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds={user_id}&size=420x420&format=Png") as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if data.get("data") and len(data["data"]) > 0:
+                        image_url = data["data"][0].get("imageUrl")
+                        if image_url:
+                            async with self.session.get(image_url) as img_response:
+                                if img_response.status == 200:
+                                    return await img_response.read()
+            
+            # Fallback to older API
+            avatar_url = f"https://www.roblox.com/avatar-thumbnail/image?userId={user_id}&width=420&height=420&format=png"
             async with self.session.get(avatar_url) as response:
                 if response.status == 200:
                     return await response.read()
-                return None
+            
+            return None
         except Exception as e:
             print(f"Error in get_user_avatar_image: {str(e)}")
             return None
     
     async def get_user_full_avatar(self, user_id):
         """Get user's full avatar image as bytes"""
-        avatar_url = f"https://www.roblox.com/outfit-thumbnail/image?userOutfitId={user_id}&width=420&height=420&format=png"
+        # Try the thumbnails API first
         try:
+            async with self.session.get(f"https://thumbnails.roblox.com/v1/users/avatar?userIds={user_id}&size=420x420&format=Png") as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if data.get("data") and len(data["data"]) > 0:
+                        image_url = data["data"][0].get("imageUrl")
+                        if image_url:
+                            async with self.session.get(image_url) as img_response:
+                                if img_response.status == 200:
+                                    return await img_response.read()
+            
+            # Fallback to older API
+            avatar_url = f"https://www.roblox.com/outfit-thumbnail/image?userOutfitId={user_id}&width=420&height=420&format=png"
             async with self.session.get(avatar_url) as response:
                 if response.status == 200:
                     return await response.read()
-                return None
+            
+            return None
         except Exception as e:
             print(f"Error in get_user_full_avatar: {str(e)}")
             return None
@@ -104,10 +130,18 @@ class Roblox(commands.Cog):
     async def get_user_badges(self, user_id):
         """Get count of user's badges"""
         try:
-            async with self.session.get(f"https://badges.roblox.com/v1/users/{user_id}/badges?limit=1&sortOrder=Asc") as response:
+            # First, try the v1 API endpoint
+            async with self.session.get(f"https://badges.roblox.com/v1/users/{user_id}/badges?limit=10&sortOrder=Asc") as response:
                 if response.status == 200:
                     data = await response.json()
                     return data.get("totalCount", 0)
+                
+                # If that fails, try the older API endpoint
+                async with self.session.get(f"https://www.roblox.com/badges/roblox?userId={user_id}&limit=10") as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        return len(data.get("RobloxBadges", [])) or 0
+                
                 return 0
         except Exception as e:
             print(f"Error in get_user_badges: {str(e)}")
@@ -197,6 +231,9 @@ class Roblox(commands.Cog):
         if not user_info:
             await interaction.followup.send(f"Could not find Roblox user with ID {user_id}.")
             return
+            
+        # Print debug info to help troubleshoot
+        print(f"Looking up Roblox user: {username} (ID: {user_id})")
         
         # Get additional information in parallel
         tasks = [
@@ -335,13 +372,17 @@ class Roblox(commands.Cog):
             files.append(full_avatar_file)
             embed.set_image(url="attachment://full_avatar.png")
         
+        # Print debug info
+        print(f"Avatar image data: {'Found' if avatar_bytes else 'Not found'}")
+        print(f"Full avatar image data: {'Found' if full_avatar_bytes else 'Not found'}")
+        
         # Send the message with files
         if files:
             await interaction.followup.send(embed=embed, files=files)
         else:
-            # Fallback to URLs if we couldn't download the images
-            embed.set_thumbnail(url=f"https://www.roblox.com/avatar-thumbnail/image?userId={user_id}&width=420&height=420&format=png")
-            embed.set_image(url=f"https://www.roblox.com/outfit-thumbnail/image?userOutfitId={user_id}&width=420&height=420&format=png")
+            # Fallback to direct URLs in the embed if we couldn't download the images
+            embed.set_thumbnail(url=f"https://tr.rbxcdn.com/avatar/420/420/AvatarHeadshot/Png/noCache/{user_id}")
+            embed.set_image(url=f"https://tr.rbxcdn.com/avatar/420/420/Avatar/Png/noCache/{user_id}")
             await interaction.followup.send(embed=embed)
     
     @app_commands.command(name="robloxgroup", description="Look up a Roblox group by ID")
@@ -421,8 +462,16 @@ class Roblox(commands.Cog):
             else:
                 embed.add_field(name="👑 Owner", value="No owner (owned by Roblox)", inline=True)
             
-            # Add member count
-            embed.add_field(name="👥 Members", value=f"{members_count:,}", inline=True)
+            # Add member count - fix the formatting error
+            try:
+                if isinstance(members_count, (int, float)):
+                    formatted_count = format(members_count, ",")
+                    embed.add_field(name="👥 Members", value=formatted_count, inline=True)
+                else:
+                    embed.add_field(name="👥 Members", value=str(members_count), inline=True)
+            except Exception as e:
+                print(f"Error formatting member count: {e}")
+                embed.add_field(name="👥 Members", value=str(members_count), inline=True)
             
             # Add creation date if available
             if "created" in group_info:
