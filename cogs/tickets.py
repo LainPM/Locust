@@ -41,6 +41,7 @@ class TicketSystem(commands.Cog):
                 channel_id INTEGER,
                 user_id INTEGER,
                 case_number INTEGER,
+                ticket_type TEXT,
                 status TEXT,
                 PRIMARY KEY (guild_id, channel_id)
             )
@@ -81,14 +82,15 @@ class TicketSystem(commands.Cog):
             color=discord.Color.blurple()
         )
         types = [t.strip() for t in ticket_types.split(',')]
-        view = TicketPanelView(types)
+        view = TicketPanelView(self.bot, types)
         message = await ticket_panel.send(embed=embed, view=view)
         self.bot.add_view(view, message_id=message.id)
         await interaction.response.send_message("Ticket system set up successfully!", ephemeral=True)
 
 class TicketPanelView(ui.View):
-    def __init__(self, types):
+    def __init__(self, bot, types):
         super().__init__(timeout=None)
+        self.bot = bot
         for t in types:
             btn = ui.Button(label=t, style=discord.ButtonStyle.primary, custom_id=f"create_{t}")
             btn.callback = self._on_ticket_button
@@ -96,99 +98,122 @@ class TicketPanelView(ui.View):
 
     async def _on_ticket_button(self, interaction: discord.Interaction):
         ttype = interaction.data['custom_id'].split('_',1)[1]
-        # Generate next case number
         case_number = cases_col.count_documents({}) + 1
-        # Create channel
+
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute('SELECT ticket_category_id, mod_roles FROM config WHERE guild_id=?', (interaction.guild.id,))
         cat_id, mod_roles = c.fetchone()
         mod_roles = json.loads(mod_roles)
-        overwrites = {interaction.guild.default_role: discord.PermissionOverwrite(view_channel=False),
-                      interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True)}
+
+        overwrites = {
+            interaction.guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True)
+        }
         for r in mod_roles:
             role = interaction.guild.get_role(int(r))
             if role:
                 overwrites[role] = discord.PermissionOverwrite(view_channel=True)
-        channel = await interaction.guild.create_text_channel(name=f"ticket-{case_number}", category=interaction.guild.get_channel(cat_id), overwrites=overwrites)
-        # Record in SQLite
-        c.execute('INSERT INTO tickets VALUES (?,?,?,?,?)', (interaction.guild.id, channel.id, interaction.user.id, case_number, 'open'))
+
+        channel_name = f"{ttype.lower()}-{case_number}-{interaction.user.name}"
+        channel = await interaction.guild.create_text_channel(
+            name=channel_name,
+            category=interaction.guild.get_channel(cat_id),
+            overwrites=overwrites
+        )
+
+        c.execute('INSERT INTO tickets VALUES (?,?,?,?,?,?)', (
+            interaction.guild.id,
+            channel.id,
+            interaction.user.id,
+            case_number,
+            ttype,
+            'open'
+        ))
         conn.commit(); conn.close()
-        # Post initial embed
-        embed = discord.Embed(title=f"Ticket {case_number}: {ttype}", description="A staff member will be with you shortly.", color=discord.Color.green())
-        view = OpenTicketView(self)
+
+        embed = discord.Embed(
+            title=f"Ticket {case_number}: {ttype}",
+            description="A staff member will be with you shortly.",
+            color=discord.Color.green()
+        )
+        view = OpenTicketView(self.bot)
         msg = await channel.send(embed=embed, view=view)
         self.bot.add_view(view, message_id=msg.id)
         await interaction.response.send_message(f"Ticket created: {channel.mention}", ephemeral=True)
 
 class OpenTicketView(ui.View):
-    def __init__(self, cog):
+    def __init__(self, bot):
         super().__init__(timeout=None)
-        self.cog = cog
+        self.bot = bot
         btn = ui.Button(label="Close Ticket", style=discord.ButtonStyle.danger, custom_id="close_ticket")
         btn.callback = self._on_close
         self.add_item(btn)
 
     async def _on_close(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(CloseModal(self.cog))
+        await interaction.response.send_modal(CloseModal(self.bot))
 
 class CloseModal(ui.Modal, title="Close Ticket"):  # type: ignore
-    def __init__(self, cog):
+    def __init__(self, bot):
         super().__init__()
-        self.cog = cog
+        self.bot = bot
     reason = ui.TextInput(label="Reason for closing", style=discord.TextStyle.long)
 
     async def on_submit(self, interaction: discord.Interaction):
-        # Update status
         channel = interaction.channel
-        conn = sqlite3.connect(DB_PATH); c = conn.cursor()
-        c.execute('UPDATE tickets SET status=? WHERE guild_id=? AND channel_id=?', ('closed', interaction.guild.id, channel.id))
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('UPDATE tickets SET status=? WHERE guild_id=? AND channel_id=?', (
+            'closed', interaction.guild.id, channel.id
+        ))
         conn.commit(); conn.close()
-        # Build closed view
-        view = ClosedTicketView(self.cog)
-        await interaction.response.send_message("Ticket closed. You can now generate transcript or reopen.", view=view, ephemeral=False)
+
+        # Rename to add -closed
+        new_name = f"{channel.name}-closed"
+        await channel.edit(name=new_name)
+
+        view = ClosedTicketView(self.bot)
+        await interaction.response.send_message(
+            "Ticket closed. You can now generate transcript, delete, or reopen.",
+            view=view,
+            ephemeral=False
+        )
 
 class ClosedTicketView(ui.View):
-    def __init__(self, cog):
+    def __init__(self, bot):
         super().__init__(timeout=None)
-        self.cog = cog
-        self.add_item(ui.Button(label="Generate Transcript", style=discord.ButtonStyle.primary, custom_id="gen_transcript"))
-        self.add_item(ui.Button(label="Delete Ticket", style=discord.ButtonStyle.danger, custom_id="delete_ticket"))
-        self.add_item(ui.Button(label="Reopen Ticket", style=discord.ButtonStyle.success, custom_id="reopen_ticket"))
+        self.bot = bot
+        btn_transcript = ui.Button(label="Generate Transcript", style=discord.ButtonStyle.primary, custom_id="gen_transcript")
+        btn_transcript.callback = self._gen_transcript
+        btn_delete = ui.Button(label="Delete Ticket", style=discord.ButtonStyle.danger, custom_id="delete_ticket")
+        btn_delete.callback = self._delete_ticket
+        btn_reopen = ui.Button(label="Reopen Ticket", style=discord.ButtonStyle.success, custom_id="reopen_ticket")
+        btn_reopen.callback = self._reopen_ticket
+        self.add_item(btn_transcript)
+        self.add_item(btn_delete)
+        self.add_item(btn_reopen)
 
-    async def interaction_check(self, interaction: discord.Interaction):
-        return True
-
-    async def on_timeout(self):
-        pass
-
-    @ui.button(label="Generate Transcript", style=discord.ButtonStyle.primary, custom_id="gen_transcript")
-    async def _gen_transcript(self, interaction: discord.Interaction, button: ui.Button):
-        # Fetch ticket record
+    async def _gen_transcript(self, interaction: discord.Interaction):
         conn = sqlite3.connect(DB_PATH); c = conn.cursor()
-        c.execute('SELECT case_number FROM tickets WHERE guild_id=? AND channel_id=?', (interaction.guild.id, interaction.channel.id))
+        c.execute('SELECT case_number FROM tickets WHERE guild_id=? AND channel_id=?', (
+            interaction.guild.id, interaction.channel.id
+        ))
         case_num = c.fetchone()[0]
         conn.close()
-        # Gather history
         history = [msg async for msg in interaction.channel.history(limit=None, oldest_first=True)]
-        # Build HTML
         html = f"<html><body><pre>Case: {case_num}\n"
         for m in history:
             t = m.created_at.strftime('%Y-%m-%d %H:%M')
             content = m.content.replace('<','&lt;').replace('>','&gt;')
             html += f"[{t}] {m.author}: {content}\n"
         html += "</pre></body></html>"
-        # Save to Mongo
-        transcript_url = f"transcript://{case_num}"  # placeholder
         cases_col.insert_one({
             'case_number': case_num,
             'guild_id': interaction.guild.id,
             'channel_id': interaction.channel.id,
             'transcript_html': html,
-            'reason': self.view.children[0].custom_id,
             'timestamp': datetime.utcnow()
         })
-        # Send to transcript channel
         conn = sqlite3.connect(DB_PATH); c = conn.cursor()
         c.execute('SELECT transcript_channel_id FROM config WHERE guild_id=?', (interaction.guild.id,))
         tchan_id = c.fetchone()[0]
@@ -199,16 +224,19 @@ class ClosedTicketView(ui.View):
         url = sent.attachments[0].url
         await interaction.response.send_message(f"Transcript generated: {url}", ephemeral=True)
 
-    @ui.button(label="Delete Ticket", style=discord.ButtonStyle.danger, custom_id="delete_ticket")
-    async def _delete(self, interaction: discord.Interaction, button: ui.Button):
+    async def _delete_ticket(self, interaction: discord.Interaction):
         await interaction.response.send_message("Deleting ticket channel...", ephemeral=True)
         await interaction.channel.delete()
 
-    @ui.button(label="Reopen Ticket", style=discord.ButtonStyle.success, custom_id="reopen_ticket")
-    async def _reopen(self, interaction: discord.Interaction, button: ui.Button):
+    async def _reopen_ticket(self, interaction: discord.Interaction):
         conn = sqlite3.connect(DB_PATH); c = conn.cursor()
-        c.execute('UPDATE tickets SET status=? WHERE guild_id=? AND channel_id=?', ('open', interaction.guild.id, interaction.channel.id))
+        c.execute('UPDATE tickets SET status=? WHERE guild_id=? AND channel_id=?', (
+            'open', interaction.guild.id, interaction.channel.id
+        ))
         conn.commit(); conn.close()
+        # Rename to remove -closed
+        original = interaction.channel.name.replace('-closed', '')
+        await interaction.channel.edit(name=original)
         await interaction.response.send_message("Ticket reopened.", ephemeral=True)
 
 async def setup(bot):
