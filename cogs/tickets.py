@@ -247,11 +247,22 @@ class CloseModal(ui.Modal, title="Close Ticket"):
             {"guild_id": guild_id, "channel_id": channel.id}
         )
         
+        # Acknowledge the interaction immediately to prevent timeout
+        try:
+            await interaction.response.defer(ephemeral=False)
+        except Exception as e:
+            print(f"Error acknowledging interaction: {e}")
+            # If we can't acknowledge, the interaction might have expired
+            # We'll continue with the process but send messages to the channel instead
+        
         if not ticket_data:
-            await interaction.response.send_message(
-                "Error: Ticket data not found. Please contact an administrator.",
-                ephemeral=True
-            )
+            try:
+                await interaction.followup.send(
+                    "Error: Ticket data not found. Please contact an administrator.",
+                    ephemeral=True
+                )
+            except:
+                await channel.send("Error: Ticket data not found. Please contact an administrator.")
             return
             
         # Update ticket status in MongoDB
@@ -267,8 +278,11 @@ class CloseModal(ui.Modal, title="Close Ticket"):
         )
         
         # Rename the channel to indicate it's closed
-        new_name = f"{channel.name}-closed"
-        await channel.edit(name=new_name)
+        try:
+            new_name = f"{channel.name}-closed"
+            await channel.edit(name=new_name)
+        except Exception as e:
+            print(f"Error renaming channel: {e}")
         
         # Remove permissions from ticket creator
         ticket_data = await self.bot.cogs["TicketSystem"].tickets_col.find_one(
@@ -280,7 +294,10 @@ class CloseModal(ui.Modal, title="Close Ticket"):
             creator = interaction.guild.get_member(creator_id)
             if creator:
                 # Set read-only permissions
-                await channel.set_permissions(creator, send_messages=False)
+                try:
+                    await channel.set_permissions(creator, send_messages=False)
+                except Exception as e:
+                    print(f"Error updating permissions: {e}")
         
         # Send closed message with buttons
         embed = discord.Embed(
@@ -292,11 +309,25 @@ class CloseModal(ui.Modal, title="Close Ticket"):
         embed.add_field(name="Reason", value=self.reason.value, inline=False)
         
         view = ClosedTicketView(self.bot)
-        await interaction.response.send_message(
-            embed=embed,
-            view=view,
-            ephemeral=False
-        )
+        
+        # Use followup or channel.send depending on interaction state
+        try:
+            message = await interaction.followup.send(
+                embed=embed,
+                view=view,
+                ephemeral=False
+            )
+            # Register the view with the message ID
+            self.bot.add_view(view, message_id=message.id)
+        except Exception as e:
+            print(f"Error sending followup: {e}")
+            # Fallback to sending to channel directly
+            message = await channel.send(
+                embed=embed,
+                view=view
+            )
+            # Register the view with the message ID
+            self.bot.add_view(view, message_id=message.id)
 
 class ClosedTicketView(ui.View):
     def __init__(self, bot):
