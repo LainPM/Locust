@@ -298,30 +298,36 @@ class Roblox(commands.Cog):
                 "group_visits": None
             }
     
-        @app_commands.command(name="roblox", description="Look up a Roblox user by username or ID")
+    @app_commands.command(name="roblox", description="Look up a Roblox user by username or ID")
     @app_commands.describe(username="Roblox username or user ID")
     async def roblox_lookup(self, interaction: discord.Interaction, username: str):
-        """Look up a Roblox user by username or ID, with largest owned-group size."""
+        """Look up a Roblox user by username or ID"""
         await interaction.response.defer()
         
-        # 1) Resolve user ID
+        user_id = None
+        
+        # Check if this is a Roblox user ID (all digits)
         if username.isdigit():
             user_id = int(username)
         else:
+            # Get user ID from username
             user_id = await self.get_user_by_username(username)
+            
             if not user_id:
-                return await interaction.followup.send(f"Could not find Roblox user '{username}'.")
+                await interaction.followup.send(f"Could not find Roblox user with username '{username}'.")
+                return
         
-        # 2) Fetch core info
+        # Get user information
         user_info = await self.get_user_info(user_id)
         if not user_info:
-            return await interaction.followup.send(f"No data for user ID {user_id}.")
+            await interaction.followup.send(f"Could not find Roblox user with ID {user_id}.")
+            return
+            
+        # Print debug info to help troubleshoot
+        print(f"Looking up Roblox user: {username} (ID: {user_id})")
         
-        # 3) Parallel extra data
-        (status, presence,
-         friends_count, followers_count, following_count,
-         groups, avatar_bytes, full_avatar_bytes,
-         is_premium, profile_stats) = await asyncio.gather(
+        # Get additional information in parallel
+        tasks = [
             self.get_user_status(user_id),
             self.get_user_presence(user_id),
             self.get_user_friends_count(user_id),
@@ -331,101 +337,172 @@ class Roblox(commands.Cog):
             self.get_user_avatar_image(user_id),
             self.get_user_full_avatar(user_id),
             self.get_premium_info(user_id),
-            self.get_profile_stats(user_id),
-        )
+            self.get_profile_stats(user_id)
+        ]
         
-        # 4) Compute largest owned-group member count
-        owned = [g["group"]["id"] for g in groups if g["role"]["name"].lower() == "owner"]
-        max_members = 0
-        for gid in owned:
-            resp = await self.session.get(f"https://groups.roblox.com/v1/groups/{gid}")
-            if resp.status == 200:
-                info = await resp.json()
-                max_members = max(max_members, info.get("memberCount", 0))
+        results = await asyncio.gather(*tasks)
+        status = results[0]
+        presence = results[1]
+        friends_count = results[2]
+        followers_count = results[3]
+        following_count = results[4]
+        groups = results[5]
+        avatar_bytes = results[6]
+        full_avatar_bytes = results[7]
+        is_premium = results[8]
+        profile_stats = results[9]
         
-        # 5) Build the embed
+        # Print debug info about profile stats
+        print(f"Profile stats: {profile_stats}")
+        
+        # Create embed
         embed = discord.Embed(
             title=f"Roblox User: {user_info['name']}",
-            description=user_info.get("description") or "No description",
-            color=discord.Color.from_rgb(226, 35, 26),
-            timestamp=datetime.datetime.utcnow(),
+            description=user_info.get("description", "No description") or "No description",
+            color=discord.Color.from_rgb(226, 35, 26),  # Roblox red
+            timestamp=datetime.datetime.now(),
             url=f"https://www.roblox.com/users/{user_id}/profile"
         )
         
-        # Display name
-        if dn := user_info.get("displayName"):
-            if dn != user_info["name"]:
-                embed.add_field(name="Display Name", value=dn, inline=True)
+        # Add display name if different from username
+        if user_info.get("displayName") and user_info.get("displayName") != user_info["name"]:
+            embed.add_field(name="Display Name", value=user_info["displayName"], inline=True)
         
-        # Badges
-        badges = []
-        if user_info.get("isBanned"):   badges.append("🚫 Banned")
-        if user_info.get("hasVerifiedBadge"): badges.append("✓ Verified")
+        # Add account badges
+        account_badges = []
+        if user_info.get("isBanned", False):
+            account_badges.append("🚫 Banned")
+        if user_info.get("hasVerifiedBadge", False):
+            account_badges.append("✓ Verified")
         if is_premium or (presence and presence.get("premiumMembershipType", 0) > 0):
-            badges.append("⭐ Premium")
-        if badges:
-            embed.add_field(name="Account Badges", value=" | ".join(badges), inline=True)
+            account_badges.append("⭐ Premium")
         
-        # Presence
+        if account_badges:
+            embed.add_field(name="Account Badges", value=" | ".join(account_badges), inline=True)
+        
+        # Add presence information if available
         if presence:
-            t = presence.get("userPresenceType", 0)
-            text = {0:"Offline",1:"🟢 Online",2:"🎮 In Game",3:"🛠️ In Studio"}.get(t, "Offline")
-            embed.add_field(name="Online Status", value=text, inline=True)
-            if t == 2 and presence.get("lastLocation"):
+            online_status = presence.get("userPresenceType", 0)
+            status_text = "Offline"
+            if online_status == 1:
+                status_text = "🟢 Online"
+            elif online_status == 2:
+                status_text = "🎮 In Game"
+            elif online_status == 3:
+                status_text = "🛠️ In Studio"
+            
+            embed.add_field(name="Online Status", value=status_text, inline=True)
+            
+            # If user is in game, show the game
+            if online_status == 2 and presence.get("lastLocation"):
                 embed.add_field(name="Currently Playing", value=presence["lastLocation"], inline=True)
         
-        # Account age
-        if created := user_info.get("created"):
-            dt = datetime.datetime.fromisoformat(created.replace("Z","+00:00"))
-            age_days = (datetime.datetime.now(datetime.timezone.utc) - dt).days
-            yrs, mos = divmod(age_days, 365)[0], divmod(age_days % 365, 30)[0]
-            age = f"{yrs} year{'s' if yrs!=1 else ''}" + (f", {mos} month{'s' if mos!=1 else ''}" if mos else "")
+        # Add creation date
+        if "created" in user_info:
+            created_date = datetime.datetime.fromisoformat(user_info["created"].replace("Z", "+00:00"))
+            account_age = (datetime.datetime.now(datetime.timezone.utc) - created_date).days
+            years = account_age // 365
+            months = (account_age % 365) // 30
+            
+            if years > 0:
+                age_text = f"{years} year{'s' if years != 1 else ''}"
+                if months > 0:
+                    age_text += f", {months} month{'s' if months != 1 else ''}"
+            else:
+                age_text = f"{months} month{'s' if months != 1 else ''}" if months > 0 else f"{account_age} day{'s' if account_age != 1 else ''}"
+                
             embed.add_field(
-                name="Account Age",
-                value=f"Created: {dt.strftime('%b %d, %Y')}\nAge: {age}",
+                name="Account Age", 
+                value=f"Created: {created_date.strftime('%b %d, %Y')}\nAge: {age_text}", 
                 inline=True
             )
         
-        # Social
-        embed.add_field(name="Friends",    value=f"{friends_count:,}",   inline=True)
-        embed.add_field(name="Followers",  value=f"{followers_count:,}", inline=True)
-        embed.add_field(name="Following",  value=f"{following_count:,}", inline=True)
+        # Add status if available
+        if status and status.get("status"):
+            embed.add_field(name="Status", value=status["status"], inline=False)
         
-        # New: Largest owned-group size
-        embed.add_field(name="Group Member Amount", value=f"{max_members:,}", inline=True)
+        # Add social statistics with safe formatting
+        try:
+            embed.add_field(name="Friends", value=format(friends_count, ","), inline=True)
+        except:
+            embed.add_field(name="Friends", value=str(friends_count), inline=True)
+            
+        try:
+            embed.add_field(name="Followers", value=format(followers_count, ","), inline=True)
+        except:
+            embed.add_field(name="Followers", value=str(followers_count), inline=True)
+            
+        try:
+            embed.add_field(name="Following", value=format(following_count, ","), inline=True)
+        except:
+            embed.add_field(name="Following", value=str(following_count), inline=True)
         
-        # ───── Profile Statistics ─────
-        embed.add_field(name="\u200b", value="__**Profile Statistics**__", inline=False)
-        pv = profile_stats.get("profile_visits") or "0"
-        gv = profile_stats.get("group_visits")   or "0"
-        ap = profile_stats.get("active_players") or "0"
-        pl = profile_stats.get("place_visits")   or "0"
-        embed.add_field(name="👁️ Profile Visits", value=pv, inline=True)
-        embed.add_field(name="👥 Group Visits",   value=gv, inline=True)
-        embed.add_field(name="🎮 Active Players", value=ap, inline=True)
-        embed.add_field(name="🚶 Place Visits",   value=pl, inline=True)
+        # Add a dedicated section for profile statistics
+        embed.add_field(name="\u200b", value="__**Account Stats**__", inline=False)  # Section header
         
-        # 6) Attach images
+        # Profile visits
+        if profile_stats and profile_stats.get("profile_visits"):
+            embed.add_field(name="👁️ Profile Visits", value=profile_stats["profile_visits"], inline=True)
+        
+        # Group visits
+        if profile_stats and profile_stats.get("group_visits"):
+            embed.add_field(name="👥 Group Visits", value=profile_stats["group_visits"], inline=True)
+            
+        # Active players
+        if profile_stats and profile_stats.get("active_players"):
+            embed.add_field(name="🎮 Active Players", value=profile_stats["active_players"], inline=True)
+            
+        # Place visits
+        if profile_stats and profile_stats.get("place_visits"):
+            embed.add_field(name="🚶 Place Visits", value=profile_stats["place_visits"], inline=True)
+        
+        # Group memberships
+        if groups:
+            group_text = []
+            for i, group_data in enumerate(groups[:5]):  # Show up to 5 groups
+                group = group_data.get("group", {})
+                role = group_data.get("role", {})
+                group_name = group.get("name", "Unknown Group")
+                role_name = role.get("name", "Member")
+                
+                # Add rank number if higher than 1
+                rank = role.get("rank", 0)
+                rank_display = f" (Rank: {rank})" if rank > 1 else ""
+                
+                group_text.append(f"{i+1}. {group_name} - {role_name}{rank_display}")
+            
+            embed.add_field(
+                name=f"Groups ({len(groups)})",
+                value="\n".join(group_text) if group_text else "Not in any groups",
+                inline=False
+            )
+        
+        # Set footer
+        embed.set_footer(text=f"Roblox User ID: {user_id}")
+        
+        # Prepare files for sending
         files = []
+        
+        # Add avatar as thumbnail
         if avatar_bytes:
-            files.append(discord.File(io.BytesIO(avatar_bytes), "avatar.png"))
+            avatar_file = discord.File(fp=io.BytesIO(avatar_bytes), filename="avatar.png")
+            files.append(avatar_file)
             embed.set_thumbnail(url="attachment://avatar.png")
+        
+        # Add full avatar as image if available
         if full_avatar_bytes:
-            files.append(discord.File(io.BytesIO(full_avatar_bytes), "full_avatar.png"))
+            full_avatar_file = discord.File(fp=io.BytesIO(full_avatar_bytes), filename="full_avatar.png")
+            files.append(full_avatar_file)
             embed.set_image(url="attachment://full_avatar.png")
         
-        # 7) Send
+        # Send the message with files
         if files:
             await interaction.followup.send(embed=embed, files=files)
         else:
-            embed.set_thumbnail(
-                url=f"https://tr.rbxcdn.com/avatar/420/420/AvatarHeadshot/Png/noCache/{user_id}"
-            )
-            embed.set_image(
-                url=f"https://tr.rbxcdn.com/avatar/420/420/Avatar/Png/noCache/{user_id}"
-            )
+            # Fallback to direct URLs in the embed if we couldn't download the images
+            embed.set_thumbnail(url=f"https://tr.rbxcdn.com/avatar/420/420/AvatarHeadshot/Png/noCache/{user_id}")
+            embed.set_image(url=f"https://tr.rbxcdn.com/avatar/420/420/Avatar/Png/noCache/{user_id}")
             await interaction.followup.send(embed=embed)
-
     
     @app_commands.command(name="robloxgroup", description="Look up a Roblox group by ID")
     @app_commands.describe(group_id="Roblox group ID")
