@@ -13,9 +13,6 @@ class Purge(commands.Cog):
         self.bot = bot
         # Store audit log entries for completed purges
         self.purge_logs = []
-        
-        # Set up command group for organization in Discord UI
-        self.purge_group = app_commands.Group(name="purge", description="Message purge commands")
     
     def can_purge_message(self, message: discord.Message) -> bool:
         """Check if a message can be purged (< 14 days old)"""
@@ -200,13 +197,13 @@ class Purge(commands.Cog):
         else:
             await interaction.followup.send("No messages were deleted.", ephemeral=True)
     
-    @purge_group.command(name="user", description="Delete messages from a specific user")
+    @app_commands.command(name="purgeuser", description="Delete messages from a specific user")
     @app_commands.describe(
         user="The user whose messages to delete",
         amount="Number of messages to check (max 1000)"
     )
     @app_commands.default_permissions(manage_messages=True)
-    async def purge_user(self, interaction: discord.Interaction, user: discord.Member, amount: int = 100):
+    async def slash_purge_user(self, interaction: discord.Interaction, user: discord.Member, amount: int = 100):
         """Delete messages from a specific user"""
         await interaction.response.defer(ephemeral=True)
         
@@ -228,7 +225,7 @@ class Purge(commands.Cog):
         else:
             await interaction.followup.send(f"No messages from {user.mention} were deleted.", ephemeral=True)
             
-    @purge_group.command(name="match", description="Delete messages containing specific text")
+    @app_commands.command(name="purgematch", description="Delete messages containing specific text")
     @app_commands.describe(
         text="The text to match",
         amount="Number of messages to check (max 100)"
@@ -251,7 +248,7 @@ class Purge(commands.Cog):
         else:
             await interaction.followup.send(f"No messages containing '{text}' were found.", ephemeral=True)
             
-    @purge_group.command(name="not", description="Delete messages NOT containing specific text")
+    @app_commands.command(name="purgenot", description="Delete messages NOT containing specific text")
     @app_commands.describe(
         text="The text to match against",
         amount="Number of messages to check (max 100)"
@@ -274,7 +271,7 @@ class Purge(commands.Cog):
         else:
             await interaction.followup.send(f"No messages not containing '{text}' were found.", ephemeral=True)
             
-    @purge_group.command(name="startswith", description="Delete messages starting with specific text")
+    @app_commands.command(name="purgestartswith", description="Delete messages starting with specific text")
     @app_commands.describe(
         text="The text that messages should start with",
         amount="Number of messages to check (max 100)"
@@ -297,7 +294,7 @@ class Purge(commands.Cog):
         else:
             await interaction.followup.send(f"No messages starting with '{text}' were found.", ephemeral=True)
             
-    @purge_group.command(name="endswith", description="Delete messages ending with specific text")
+    @app_commands.command(name="purgeendswith", description="Delete messages ending with specific text")
     @app_commands.describe(
         text="The text that messages should end with",
         amount="Number of messages to check (max 100)"
@@ -320,7 +317,7 @@ class Purge(commands.Cog):
         else:
             await interaction.followup.send(f"No messages ending with '{text}' were found.", ephemeral=True)
             
-    @purge_group.command(name="links", description="Delete messages containing links")
+    @app_commands.command(name="purgelinks", description="Delete messages containing links")
     @app_commands.describe(amount="Number of messages to check (max 100)")
     @app_commands.default_permissions(manage_messages=True)
     async def purge_links(self, interaction: discord.Interaction, amount: int = 100):
@@ -340,7 +337,7 @@ class Purge(commands.Cog):
         else:
             await interaction.followup.send("No messages containing links were found.", ephemeral=True)
             
-    @purge_group.command(name="invites", description="Delete messages containing Discord invites")
+    @app_commands.command(name="purgeinvites", description="Delete messages containing Discord invites")
     @app_commands.describe(amount="Number of messages to check (max 100)")
     @app_commands.default_permissions(manage_messages=True)
     async def purge_invites(self, interaction: discord.Interaction, amount: int = 100):
@@ -360,7 +357,7 @@ class Purge(commands.Cog):
         else:
             await interaction.followup.send("No messages containing Discord invites were found.", ephemeral=True)
             
-    @purge_group.command(name="images", description="Delete messages containing images")
+    @app_commands.command(name="purgeimages", description="Delete messages containing images")
     @app_commands.describe(amount="Number of messages to check (max 100)")
     @app_commands.default_permissions(manage_messages=True)
     async def purge_images(self, interaction: discord.Interaction, amount: int = 100):
@@ -380,7 +377,7 @@ class Purge(commands.Cog):
         else:
             await interaction.followup.send("No messages containing images were found.", ephemeral=True)
             
-    @purge_group.command(name="mentions", description="Delete messages containing mentions")
+    @app_commands.command(name="purgementions", description="Delete messages containing mentions")
     @app_commands.describe(amount="Number of messages to check (max 100)")
     @app_commands.default_permissions(manage_messages=True)
     async def purge_mentions(self, interaction: discord.Interaction, amount: int = 100):
@@ -400,7 +397,7 @@ class Purge(commands.Cog):
         else:
             await interaction.followup.send("No messages containing mentions were found.", ephemeral=True)
             
-    @purge_group.command(name="embeds", description="Delete messages containing embeds")
+    @app_commands.command(name="purgeembeds", description="Delete messages containing embeds")
     @app_commands.describe(amount="Number of messages to check (max 100)")
     @app_commands.default_permissions(manage_messages=True)
     async def purge_embeds(self, interaction: discord.Interaction, amount: int = 100):
@@ -417,7 +414,7 @@ class Purge(commands.Cog):
         else:
             await interaction.followup.send("No messages containing embeds were found.", ephemeral=True)
             
-    @purge_group.command(name="bots", description="Delete messages sent by bots")
+    @app_commands.command(name="purgebots", description="Delete messages sent by bots")
     @app_commands.describe(amount="Number of messages to check (max 100)")
     @app_commands.default_permissions(manage_messages=True)
     async def purge_bots(self, interaction: discord.Interaction, amount: int = 100):
@@ -434,7 +431,7 @@ class Purge(commands.Cog):
         else:
             await interaction.followup.send("No messages from bots were found.", ephemeral=True)
             
-    @purge_group.command(name="humans", description="Delete messages sent by humans")
+    @app_commands.command(name="purgehumans", description="Delete messages sent by humans")
     @app_commands.describe(amount="Number of messages to check (max 100)")
     @app_commands.default_permissions(manage_messages=True)
     async def purge_humans(self, interaction: discord.Interaction, amount: int = 100):
@@ -451,7 +448,7 @@ class Purge(commands.Cog):
         else:
             await interaction.followup.send("No messages from humans were found.", ephemeral=True)
             
-    @purge_group.command(name="text", description="Delete text-only messages")
+    @app_commands.command(name="purgetext", description="Delete text-only messages")
     @app_commands.describe(amount="Number of messages to check (max 100)")
     @app_commands.default_permissions(manage_messages=True)
     async def purge_text(self, interaction: discord.Interaction, amount: int = 100):
@@ -468,7 +465,7 @@ class Purge(commands.Cog):
         else:
             await interaction.followup.send("No text-only messages were found.", ephemeral=True)
             
-    @purge_group.command(name="after", description="Delete messages after a specific message ID")
+    @app_commands.command(name="purgeafter", description="Delete messages after a specific message ID")
     @app_commands.describe(
         message_id="The ID of the message to purge after",
         amount="Number of messages to check (max 100)"
@@ -504,7 +501,7 @@ class Purge(commands.Cog):
         except discord.HTTPException as e:
             await interaction.followup.send(f"Error fetching message: {str(e)}", ephemeral=True)
             
-    @purge_group.command(name="pinned", description="Delete messages excluding pinned messages")
+    @app_commands.command(name="purgepinned", description="Delete messages excluding pinned messages")
     @app_commands.describe(amount="Number of messages to check (max 100)")
     @app_commands.default_permissions(manage_messages=True)
     async def purge_pinned(self, interaction: discord.Interaction, amount: int = 100):
@@ -521,7 +518,7 @@ class Purge(commands.Cog):
         else:
             await interaction.followup.send("No non-pinned messages were found.", ephemeral=True)
             
-    @purge_group.command(name="all", description="Delete all messages including pinned")
+    @app_commands.command(name="purgeall", description="Delete all messages including pinned")
     @app_commands.describe(amount="Number of messages to check (max 100)")
     @app_commands.default_permissions(manage_messages=True)
     async def purge_all(self, interaction: discord.Interaction, amount: int = 100):
@@ -565,5 +562,4 @@ class Purge(commands.Cog):
 
 # Setup function for loading the cog
 async def setup(bot):
-    cog = Purge(bot)
-    await bot.add_cog(cog)
+    await bot.add_cog(Purge(bot))
