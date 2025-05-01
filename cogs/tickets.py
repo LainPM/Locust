@@ -12,7 +12,6 @@ DB_PATH = 'tickets.db'
 class TicketSystem(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        # Init DB
         self.conn = sqlite3.connect(DB_PATH)
         self._init_db()
 
@@ -147,30 +146,71 @@ class CloseModal(ui.Modal, title="Close Ticket"):  # type: ignore
     reason = ui.TextInput(label="Reason for closing", style=discord.TextStyle.long)
 
     async def on_submit(self, interaction: discord.Interaction):
-        channel = interaction.channel
-        messages = [msg async for msg in channel.history(limit=None, oldest_first=True)]
-        html = "<html><body>"
-        for m in messages:
-            time = m.created_at.strftime('%Y-%m-%d %H:%M')
-            html += f"<p><strong>{m.author} [{time}]</strong>: {m.content}</p>"
-        html += f"<p><em>Closed by {interaction.user} for reason: {self.reason.value}</em></p>"
-        html += "</body></html>"
-        data = io.BytesIO(html.encode('utf-8'))
+        # Acknowledge closing
+        await interaction.response.send_message("Ticket is closing and transcript will be generated shortly.", ephemeral=False)
 
+        channel = interaction.channel
+        # Gather config
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute('SELECT transcript_channel_id FROM config WHERE guild_id=?', (interaction.guild.id,))
         tchan_id = c.fetchone()[0]
         conn.close()
+        transcript_chan = interaction.guild.get_channel(tchan_id)
 
-        tchan = interaction.guild.get_channel(tchan_id)
-        msg = await tchan.send(file=discord.File(data, filename=f"transcript-{channel.id}.html"))
-        url = msg.attachments[0].url
+        # Fetch messages
+        messages = [msg async for msg in channel.history(limit=None, oldest_first=True)]
+        msg_count = len(messages)
 
+        # Count attachments
+        att_saved = 0
+        att_skipped = 0
+        for m in messages:
+            for att in m.attachments:
+                if att.size <= 8 * 1024 * 1024:  # 8MB limit
+                    att_saved += 1
+                else:
+                    att_skipped += 1
+
+        # User info counts
+        user_counts = {}
+        for m in messages:
+            uid = m.author.id
+            user_counts.setdefault(uid, {'user': m.author, 'count': 0})
+            user_counts[uid]['count'] += 1
+
+        # Build HTML
+        html = "<html><body><pre>"
+        html += "<Server-Info>\n"
+        html += f"    Server: {interaction.guild.name} ({interaction.guild.id})\n"
+        html += f"    Channel: {channel.name} ({channel.id})\n"
+        html += f"    Messages: {msg_count}\n"
+        html += f"    Attachments Saved: {att_saved}\n"
+        html += f"    Attachments Skipped: {att_skipped}\n\n"
+        html += "<User-Info>\n"
+        for i, data in enumerate(user_counts.values(), 1):
+            user = data['user']
+            html += f"    {i} - {user} ({user.id}): {data['count']}\n"
+        html += "\n<Base-Transcript>\n"
+        for m in messages:
+            t = m.created_at.strftime('%Y-%m-%d %H:%M')
+            content = m.content.replace('<', '&lt;').replace('>', '&gt;')
+            html += f"[{t}] {m.author}: {content}\n"
+        html += f"\nClosed by {interaction.user} for reason: {self.reason.value}\n"
+        html += "</pre></body></html>"
+
+        data = io.BytesIO(html.encode('utf-8'))
+
+        # Send transcript file
+        sent = await transcript_chan.send(file=discord.File(data, filename=f"transcript-{channel.id}.html"))
+        url = sent.attachments[0].url
+
+        # Send link button
         view = ui.View()
         view.add_item(ui.Button(label="View Transcript", url=url))
-        await channel.send("Transcript generated:", view=view)
+        await channel.send("Here is your transcript:", view=view)
 
+        # Clean DB and delete channel
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute('DELETE FROM tickets WHERE guild_id=? AND channel_id=?', (interaction.guild.id, channel.id))
