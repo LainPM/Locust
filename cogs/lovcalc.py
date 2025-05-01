@@ -173,10 +173,10 @@ class LoveCalc(commands.Cog):
             heart_color = (0, 0, 255, 255)  # Red (BGR format)
             cv2.putText(heart_img, "♥", (heart_size//4, heart_size*3//4), cv2.FONT_HERSHEY_SIMPLEX, 2, heart_color, 3)
         
-        # Add percentage text to the image (centered on top of the heart)
+        # Add percentage text to the image (centered OVER the heart)
         text = f"{percentage}%"
         font = cv2.FONT_HERSHEY_SIMPLEX
-        font_scale = 1.2  # Larger font
+        font_scale = 1.5  # Larger font
         thickness = 3     # Thicker text
         text_size = cv2.getTextSize(text, font, font_scale, thickness)[0]
         
@@ -204,11 +204,11 @@ class LoveCalc(commands.Cog):
                         if (0 <= heart_pos_y + y < height and 0 <= heart_pos_x + x < width):
                             image[heart_pos_y + y, heart_pos_x + x] = heart_img[y, x]
             
-            # Place percentage text centered on top of the heart
-            text_pos_x = (width - text_size[0]) // 2
-            text_pos_y = heart_pos_y - 10  # Position above the heart
+            # Calculate the exact center of the heart for text placement
+            text_pos_x = heart_pos_x + (heart_size - text_size[0]) // 2
+            text_pos_y = heart_pos_y + (heart_size + text_size[1]) // 2
             
-            # Draw text with black outline for better visibility
+            # Draw text with black outline for better visibility (ON TOP of the heart)
             cv2.putText(image, text, (text_pos_x-1, text_pos_y-1), font, font_scale, (0, 0, 0, 255), thickness+1)
             cv2.putText(image, text, (text_pos_x+1, text_pos_y-1), font, font_scale, (0, 0, 0, 255), thickness+1)
             cv2.putText(image, text, (text_pos_x-1, text_pos_y+1), font, font_scale, (0, 0, 0, 255), thickness+1)
