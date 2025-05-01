@@ -391,7 +391,7 @@ class AICog(commands.Cog):
                     should_end = await self.detect_end_intent(content)
                     if should_end:
                         await self.mark_conversation_inactive(user_id, channel_id)
-                        await message.reply("I'll be here if you need me again! Just say 'Hey Axis'.")
+                        await message.reply("<End Conversation>")
                         return
                 except Exception as e:
                     print(f"AI Cog: Error detecting end intent: {e}")
@@ -403,7 +403,7 @@ class AICog(commands.Cog):
                 
                 # If no query after "Hey Axis", just greet
                 if not query:
-                    await message.reply("Hey there! How can I help you today? We're now in conversation mode, so you can keep chatting with me without saying 'Hey Axis' each time.")
+                    await message.reply("Hey there!")
                     await self.mark_conversation_active(user_id, channel_id)
                     return
             else:
