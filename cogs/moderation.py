@@ -586,10 +586,13 @@ class Moderation(commands.Cog):
         
         # Create pagination view if there are more than logs_per_page logs
         if log_count > logs_per_page:
-            view = ModlogsPaginator(logs_list, user, logs_per_page)
-            await interaction.response.send_message(embed=embed, view=view)
-        else:
-            await interaction.response.send_message(embed=embed)
+    view = PaginationView(
+        mod_logs=logs_list,
+        target_user=user.display_name,
+        user_id=user.id,
+        logs_per_page=logs_per_page
+    )
+    await interaction.response.send_message(embed=embed, view=view)
     
     @app_commands.command(name="unban", description="Unban a user from the server")
     @app_commands.describe(
