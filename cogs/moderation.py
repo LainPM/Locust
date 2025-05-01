@@ -5,12 +5,14 @@ from discord import app_commands, ui
 import datetime
 
 class PaginationView(ui.View):
-    def __init__(self, mod_logs, logs_per_page=5, timeout=180):
+    def __init__(self, mod_logs, target_user, user_id, logs_per_page=5, timeout=180):
         super().__init__(timeout=timeout)
         self.mod_logs = mod_logs
         self.logs_per_page = logs_per_page
         self.current_page = 1
         self.max_pages = ((len(mod_logs) - 1) // logs_per_page) + 1
+        self.target_user = target_user  # Store user name
+        self.user_id = user_id  # Store user ID
 
     @ui.button(label="Previous", style=discord.ButtonStyle.secondary, disabled=True)
     async def previous_button(self, interaction: discord.Interaction, button: ui.Button):
@@ -22,7 +24,7 @@ class PaginationView(ui.View):
         self.next_button.disabled = False
         
         # Update the embed with the new page
-        embed = self.create_log_embed(interaction)
+        embed = self.create_log_embed()
         await interaction.response.edit_message(embed=embed, view=self)
 
     @ui.button(label="Next", style=discord.ButtonStyle.primary)
@@ -35,13 +37,10 @@ class PaginationView(ui.View):
         self.previous_button.disabled = False
         
         # Update the embed with the new page
-        embed = self.create_log_embed(interaction)
+        embed = self.create_log_embed()
         await interaction.response.edit_message(embed=embed, view=self)
 
-    def create_log_embed(self, interaction):
-        target_user = interaction.message.embeds[0].title.split(" for ")[1]
-        user_id = interaction.message.embeds[0].footer.text.split(": ")[1]
-        
+    def create_log_embed(self):
         # Calculate start and end indices for the current page
         start_idx = (self.current_page - 1) * self.logs_per_page
         end_idx = min(start_idx + self.logs_per_page, len(self.mod_logs))
@@ -49,20 +48,21 @@ class PaginationView(ui.View):
         
         # Create embed for current page
         embed = discord.Embed(
-            title=f"Moderation Logs for {target_user}",
+            title=f"Moderation Logs for {self.target_user}",
             description=f"Showing logs {start_idx+1}-{end_idx} of {len(self.mod_logs)}",
             color=discord.Color.from_rgb(255, 165, 0),  # Orange color
             timestamp=datetime.datetime.now()
         )
         
         for log in current_logs:
-            action_type = log["action_type"]
-            reason = log["reason"]
-            moderator_id = log["moderator_id"]
-            timestamp = log["timestamp"].strftime("%Y-%m-%d %H:%M:%S") if isinstance(log["timestamp"], datetime.datetime) else "Unknown time"
+            case_id = log.get("case_id", "Unknown")
+            action_type = log.get("action_type", "unknown")
+            reason = log.get("reason", "No reason provided")
+            moderator_id = log.get("moderator_id")
+            timestamp = log.get("timestamp", datetime.datetime.now()).strftime("%Y-%m-%d %H:%M:%S") if isinstance(log.get("timestamp"), datetime.datetime) else "Unknown time"
             
-            # Get moderator mention if possible
-            moderator = interaction.guild.get_member(moderator_id) or "Unknown Moderator"
+            # Get moderator mention if possible (use lambda to handle potential None value safely)
+            moderator = discord.utils.get(discord.utils.get_all_members(), id=moderator_id) or "Unknown Moderator"
             moderator_mention = moderator.mention if isinstance(moderator, discord.Member) else moderator
             
             # Format the field value based on action type
@@ -75,13 +75,13 @@ class PaginationView(ui.View):
                 value += f"\n**Messages Deleted:** {log['delete_days']} days"
                 
             embed.add_field(
-                name=f"{action_type.title()} | {timestamp}",
+                name=f"Case #{case_id} | {action_type.title()} | {timestamp}",
                 value=value,
                 inline=False
             )
         
         # Set footer and thumbnail
-        embed.set_footer(text=f"User ID: {user_id} | Page {self.current_page}/{self.max_pages}")
+        embed.set_footer(text=f"User ID: {self.user_id} | Page {self.current_page}/{self.max_pages}")
         
         return embed
 
@@ -124,13 +124,31 @@ class Moderation(commands.Cog):
         - reason: Reason for the action
         - **kwargs: Additional data for specific action types
         """
+        # Get the next case ID for this guild
+        latest_case = await self.modlogs_collection.find_one(
+            {"guild_id": guild_id},
+            sort=[("case_id", -1)]  # Sort by case_id in descending order
+        )
+        
+        # Determine the next case ID
+        if latest_case and "case_id" in latest_case:
+            try:
+                next_case_id = int(latest_case["case_id"]) + 1
+            except (ValueError, TypeError):
+                # If case_id isn't a valid integer, start at 1
+                next_case_id = 1
+        else:
+            # No previous cases found, start at 1
+            next_case_id = 1
+            
         log_entry = {
             "guild_id": guild_id,
             "user_id": user_id,
             "moderator_id": moderator_id,
             "action_type": action_type,
             "reason": reason,
-            "timestamp": datetime.datetime.now()
+            "timestamp": datetime.datetime.now(),
+            "case_id": next_case_id
         }
         
         # Add any additional data from kwargs
@@ -138,6 +156,9 @@ class Moderation(commands.Cog):
         
         # Insert log to database
         await self.modlogs_collection.insert_one(log_entry)
+        
+        # Return the case ID for reference
+        return next_case_id
 
     @app_commands.command(name="mute", description="Timeout a user for a specified duration")
     @app_commands.describe(
@@ -438,6 +459,7 @@ class Moderation(commands.Cog):
         # Display first page of logs (limited to 5 per page)
         logs_per_page = 5
         for i, log in enumerate(logs_list[:logs_per_page], 1):
+            case_id = log.get("case_id", "Unknown")
             action_type = log.get("action_type", "unknown")
             reason = log.get("reason", "No reason provided")
             moderator_id = log.get("moderator_id")
@@ -457,7 +479,7 @@ class Moderation(commands.Cog):
                 value += f"\n**Messages Deleted:** {log['delete_days']} days"
             
             embed.add_field(
-                name=f"{action_type.title()} | {timestamp}",
+                name=f"Case #{case_id} | {action_type.title()} | {timestamp}",
                 value=value,
                 inline=False
             )
@@ -467,7 +489,7 @@ class Moderation(commands.Cog):
         
         # Create pagination view if there are more than 5 logs
         if log_count > logs_per_page:
-            view = PaginationView(logs_list, logs_per_page=logs_per_page)
+            view = PaginationView(logs_list, user.display_name, user.id, logs_per_page=logs_per_page)
             await interaction.response.send_message(embed=embed, view=view)
         else:
             await interaction.response.send_message(embed=embed)
@@ -535,57 +557,117 @@ class Moderation(commands.Cog):
         except Exception as e:
             await interaction.response.send_message(f"An error occurred: {str(e)}", ephemeral=True)
     
-    @app_commands.command(name="clearwarnings", description="Clear warnings for a user")
+    @app_commands.command(name="clearmodlogs", description="Clear all moderation logs for a user")
     @app_commands.describe(
-        user="The user to clear warnings for"
+        user="The user to clear moderation logs for"
     )
     @app_commands.default_permissions(ban_members=True)
-    async def clearwarnings(self, 
-                           interaction: discord.Interaction, 
-                           user: discord.Member):
+    async def clearmodlogs(self, 
+                          interaction: discord.Interaction, 
+                          user: discord.Member):
         # Check if user has permission (requiring ban_members for this to be more restrictive)
         if not interaction.user.guild_permissions.ban_members:
-            return await interaction.response.send_message("You don't have permission to clear warnings!", ephemeral=True)
+            return await interaction.response.send_message("You don't have permission to clear moderation logs!", ephemeral=True)
         
         guild_id = interaction.guild.id
         user_id = user.id
         
-        # Get warning count first
-        warning_count = await self.modlogs_collection.count_documents({
+        # Get log count first
+        log_count = await self.modlogs_collection.count_documents({
             "guild_id": guild_id, 
-            "user_id": user_id,
-            "action_type": "warn"
+            "user_id": user_id
         })
         
-        if warning_count == 0:
-            return await interaction.response.send_message(f"{user.mention} has no warnings to clear.", ephemeral=False)
+        if log_count == 0:
+            return await interaction.response.send_message(f"{user.mention} has no moderation logs to clear.", ephemeral=False)
         
-        # Delete warnings from MongoDB
+        # Delete all logs for this user from MongoDB
         result = await self.modlogs_collection.delete_many({
             "guild_id": guild_id, 
-            "user_id": user_id,
-            "action_type": "warn"
+            "user_id": user_id
         })
         
         # Log this action
-        await self.log_mod_action(
+        case_id = await self.log_mod_action(
             guild_id=guild_id,
             user_id=user_id,
             moderator_id=interaction.user.id,
-            action_type="clearwarnings",
-            reason=f"Cleared {warning_count} warnings"
+            action_type="clearmodlogs",
+            reason=f"Cleared {log_count} moderation logs"
         )
         
         # Create embed
         embed = discord.Embed(
-            title="Warnings Cleared",
-            description=f"Cleared {warning_count} warning(s) for {user.mention}.",
+            title="Moderation Logs Cleared",
+            description=f"Cleared {log_count} moderation logs for {user.mention}.",
             color=discord.Color.from_rgb(0, 255, 0),  # Green color
             timestamp=datetime.datetime.now()
         )
         embed.add_field(name="Cleared by", value=interaction.user.mention, inline=False)
+        embed.add_field(name="Case ID", value=f"#{case_id}", inline=False)
         embed.set_thumbnail(url=user.display_avatar.url)
         embed.set_footer(text=f"User ID: {user.id}")
+        
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="removecase", description="Remove a specific moderation case by ID")
+    @app_commands.describe(
+        case_id="The case ID to remove"
+    )
+    @app_commands.default_permissions(ban_members=True)
+    async def removecase(self, 
+                        interaction: discord.Interaction, 
+                        case_id: int):
+        # Check if user has permission
+        if not interaction.user.guild_permissions.ban_members:
+            return await interaction.response.send_message("You don't have permission to remove moderation cases!", ephemeral=True)
+        
+        guild_id = interaction.guild.id
+        
+        # Find the case
+        case = await self.modlogs_collection.find_one({
+            "guild_id": guild_id,
+            "case_id": case_id
+        })
+        
+        if not case:
+            return await interaction.response.send_message(f"Case #{case_id} not found.", ephemeral=True)
+        
+        # Get user information for the case
+        user_id = case.get("user_id")
+        action_type = case.get("action_type", "unknown")
+        
+        # Delete the case
+        await self.modlogs_collection.delete_one({
+            "guild_id": guild_id,
+            "case_id": case_id
+        })
+        
+        # Try to get user mention if possible
+        user = interaction.guild.get_member(user_id) if user_id else None
+        user_mention = user.mention if user else f"User ID: {user_id}"
+        
+        # Log this action
+        new_case_id = await self.log_mod_action(
+            guild_id=guild_id,
+            user_id=user_id if user_id else 0,
+            moderator_id=interaction.user.id,
+            action_type="removecase",
+            reason=f"Removed case #{case_id} ({action_type})"
+        )
+        
+        # Create embed
+        embed = discord.Embed(
+            title="Case Removed",
+            description=f"Case #{case_id} has been removed.",
+            color=discord.Color.from_rgb(0, 255, 0),  # Green color
+            timestamp=datetime.datetime.now()
+        )
+        embed.add_field(name="User", value=user_mention, inline=False)
+        embed.add_field(name="Action Type", value=action_type.title(), inline=False)
+        embed.add_field(name="Removed by", value=interaction.user.mention, inline=False)
+        embed.add_field(name="New Case ID", value=f"#{new_case_id}", inline=False)
+        embed.set_footer(text=f"Guild ID: {guild_id}")
         
         await interaction.response.send_message(embed=embed)
 
