@@ -25,12 +25,50 @@ class UrbanCog(commands.Cog):
                 else:
                     return None
     
+    def censor_offensive_words(self, text):
+        """Censor offensive words by showing first and last letters with asterisks between"""
+        # List of words to censor - you can extend this list as needed
+        offensive_words = [
+            'fuck', 'shit', 'ass', 'bitch', 'cock', 'dick', 'cunt', 'pussy', 'nigger', 
+            'nigga', 'faggot', 'retard', 'whore', 'slut', 'nazi', 'rape', 'piss', 'tits',
+            'cum', 'crap', 'damn', 'homo', 'dyke', 'kike', 'spic', 'twat', 'jizz', 'dildo'
+        ]
+        
+        # Compile regex for case-insensitive word boundary matches
+        patterns = [re.compile(r'\b' + re.escape(word) + r'\b', re.IGNORECASE) for word in offensive_words]
+        
+        # For each offensive word pattern, replace with censored version
+        for pattern in patterns:
+            text = pattern.sub(lambda match: self.create_censored_word(match.group(0)), text)
+        
+        return text
+
+    def create_censored_word(self, word):
+        """Create a censored version of a word (e.g., 'fuck' -> 'f**k')"""
+        if len(word) <= 2:
+            return word  # Don't censor very short words
+        
+        first_letter = word[0]
+        last_letter = word[-1]
+        middle_length = len(word) - 2
+        censored = first_letter + '*' * middle_length + last_letter
+        
+        # Preserve original capitalization
+        if word[0].isupper():
+            censored = censored[0].upper() + censored[1:]
+        
+        return censored
+    
     def clean_text(self, text):
-        """Clean text by removing bracketed words and extra whitespace"""
+        """Clean text by removing bracketed words, extra whitespace, and censoring offensive words"""
         # Replace [bracketed] words - these are links in Urban Dictionary
         cleaned = re.sub(r'\[([^\]]+)\]', r'\1', text)
         # Remove excessive newlines
         cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+        
+        # Apply censoring to offensive words
+        cleaned = self.censor_offensive_words(cleaned)
+        
         # Trim to Discord's limits (must be under 1024 chars for embed fields)
         if len(cleaned) > 1020:
             cleaned = cleaned[:1020] + "..."
