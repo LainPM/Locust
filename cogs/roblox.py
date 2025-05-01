@@ -27,9 +27,10 @@ class Roblox(commands.Cog):
     async def get_user_by_username(self, username):
         """Get Roblox user ID from username"""
         try:
-            url = "https://users.roblox.com/v1/usernames/users"
-            payload = {"usernames": [username], "excludeBannedUsers": False}
-            async with self.session.post(url, json=payload) as response:
+            async with self.session.post(
+                "https://users.roblox.com/v1/usernames/users",
+                json={"usernames": [username], "excludeBannedUsers": False}
+            ) as response:
                 if response.status == 200:
                     data = await response.json()
                     if data["data"] and len(data["data"]) > 0:
@@ -42,8 +43,7 @@ class Roblox(commands.Cog):
     async def get_user_info(self, user_id):
         """Get detailed user information"""
         try:
-            url = f"https://users.roblox.com/v1/users/{user_id}"
-            async with self.session.get(url) as response:
+            async with self.session.get(f"https://users.roblox.com/v1/users/{user_id}") as response:
                 if response.status == 200:
                     return await response.json()
                 return None
@@ -54,8 +54,7 @@ class Roblox(commands.Cog):
     async def get_user_status(self, user_id):
         """Get user's status/about me"""
         try:
-            url = f"https://users.roblox.com/v1/users/{user_id}/status"
-            async with self.session.get(url) as response:
+            async with self.session.get(f"https://users.roblox.com/v1/users/{user_id}/status") as response:
                 if response.status == 200:
                     return await response.json()
                 return None
@@ -66,9 +65,10 @@ class Roblox(commands.Cog):
     async def get_user_presence(self, user_id):
         """Get user's online status and current activity"""
         try:
-            url = "https://presence.roblox.com/v1/presence/users"
-            payload = {"userIds": [user_id]}
-            async with self.session.post(url, json=payload) as response:
+            async with self.session.post(
+                "https://presence.roblox.com/v1/presence/users",
+                json={"userIds": [user_id]}
+            ) as response:
                 if response.status == 200:
                     data = await response.json()
                     if "userPresences" in data and len(data["userPresences"]) > 0:
@@ -82,10 +82,7 @@ class Roblox(commands.Cog):
         """Get user's avatar image as bytes"""
         # Try the thumbnails API first
         try:
-            thumbnail_url = f"https://thumbnails.roblox.com/v1/users/avatar-headshot"
-            thumbnail_params = f"?userIds={user_id}&size=420x420&format=Png"
-            
-            async with self.session.get(thumbnail_url + thumbnail_params) as response:
+            async with self.session.get(f"https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds={user_id}&size=420x420&format=Png") as response:
                 if response.status == 200:
                     data = await response.json()
                     if data.get("data") and len(data["data"]) > 0:
@@ -96,9 +93,8 @@ class Roblox(commands.Cog):
                                     return await img_response.read()
             
             # Fallback to older API
-            avatar_url = f"https://www.roblox.com/avatar-thumbnail/image"
-            avatar_params = f"?userId={user_id}&width=420&height=420&format=png"
-            async with self.session.get(avatar_url + avatar_params) as response:
+            avatar_url = f"https://www.roblox.com/avatar-thumbnail/image?userId={user_id}&width=420&height=420&format=png"
+            async with self.session.get(avatar_url) as response:
                 if response.status == 200:
                     return await response.read()
             
@@ -111,10 +107,7 @@ class Roblox(commands.Cog):
         """Get user's full avatar image as bytes"""
         # Try the thumbnails API first
         try:
-            thumbnail_url = f"https://thumbnails.roblox.com/v1/users/avatar"
-            thumbnail_params = f"?userIds={user_id}&size=420x420&format=Png"
-            
-            async with self.session.get(thumbnail_url + thumbnail_params) as response:
+            async with self.session.get(f"https://thumbnails.roblox.com/v1/users/avatar?userIds={user_id}&size=420x420&format=Png") as response:
                 if response.status == 200:
                     data = await response.json()
                     if data.get("data") and len(data["data"]) > 0:
@@ -125,9 +118,8 @@ class Roblox(commands.Cog):
                                     return await img_response.read()
             
             # Fallback to older API
-            avatar_url = f"https://www.roblox.com/outfit-thumbnail/image"
-            avatar_params = f"?userOutfitId={user_id}&width=420&height=420&format=png"
-            async with self.session.get(avatar_url + avatar_params) as response:
+            avatar_url = f"https://www.roblox.com/outfit-thumbnail/image?userOutfitId={user_id}&width=420&height=420&format=png"
+            async with self.session.get(avatar_url) as response:
                 if response.status == 200:
                     return await response.read()
             
@@ -139,8 +131,7 @@ class Roblox(commands.Cog):
     async def get_user_friends_count(self, user_id):
         """Get count of user's friends"""
         try:
-            url = f"https://friends.roblox.com/v1/users/{user_id}/friends/count"
-            async with self.session.get(url) as response:
+            async with self.session.get(f"https://friends.roblox.com/v1/users/{user_id}/friends/count") as response:
                 if response.status == 200:
                     data = await response.json()
                     return data.get("count", 0)
@@ -152,8 +143,7 @@ class Roblox(commands.Cog):
     async def get_user_followers_count(self, user_id):
         """Get count of user's followers"""
         try:
-            url = f"https://friends.roblox.com/v1/users/{user_id}/followers/count"
-            async with self.session.get(url) as response:
+            async with self.session.get(f"https://friends.roblox.com/v1/users/{user_id}/followers/count") as response:
                 if response.status == 200:
                     data = await response.json()
                     return data.get("count", 0)
@@ -165,8 +155,7 @@ class Roblox(commands.Cog):
     async def get_user_following_count(self, user_id):
         """Get count of users the user is following"""
         try:
-            url = f"https://friends.roblox.com/v1/users/{user_id}/followings/count"
-            async with self.session.get(url) as response:
+            async with self.session.get(f"https://friends.roblox.com/v1/users/{user_id}/followings/count") as response:
                 if response.status == 200:
                     data = await response.json()
                     return data.get("count", 0)
@@ -178,8 +167,7 @@ class Roblox(commands.Cog):
     async def get_user_groups(self, user_id):
         """Get user's groups"""
         try:
-            url = f"https://groups.roblox.com/v2/users/{user_id}/groups/roles"
-            async with self.session.get(url) as response:
+            async with self.session.get(f"https://groups.roblox.com/v2/users/{user_id}/groups/roles") as response:
                 if response.status == 200:
                     data = await response.json()
                     return data.get("data", [])
@@ -191,8 +179,7 @@ class Roblox(commands.Cog):
     async def get_premium_info(self, user_id):
         """Get user's premium membership info"""
         try:
-            url = f"https://premiumfeatures.roblox.com/v1/users/{user_id}/validate-membership"
-            async with self.session.get(url) as response:
+            async with self.session.get(f"https://premiumfeatures.roblox.com/v1/users/{user_id}/validate-membership") as response:
                 if response.status == 200:
                     data = await response.json()
                     return data.get("isPremium", False)
@@ -209,8 +196,7 @@ class Roblox(commands.Cog):
             
             # Try direct API for some stats - sometimes available
             try:
-                url = f"https://www.roblox.com/users/profile/profileheader-json?userId={user_id}"
-                async with self.session.get(url) as response:
+                async with self.session.get(f"https://www.roblox.com/users/profile/profileheader-json?userId={user_id}") as response:
                     if response.status == 200:
                         profile_data = await response.json()
                         print(f"Profile header data found: {profile_data}")
@@ -220,10 +206,10 @@ class Roblox(commands.Cog):
                         
                         if visits or place_visits:
                             return {
-                                "profile_visits": str(visits) if visits else "0",
-                                "place_visits": str(place_visits) if place_visits else "0",
-                                "active_players": profile_data.get("ActivePlayers", "0"),
-                                "group_visits": profile_data.get("GroupVisits", "0")
+                                "profile_visits": str(visits) if visits else None,
+                                "place_visits": str(place_visits) if place_visits else None,
+                                "active_players": profile_data.get("ActivePlayers", None),
+                                "group_visits": profile_data.get("GroupVisits", None)
                             }
             except Exception as e:
                 print(f"Error getting profile stats from API: {e}")
@@ -231,19 +217,17 @@ class Roblox(commands.Cog):
             # Fall back to web scraping
             profile_url = f"https://www.roblox.com/users/{user_id}/profile"
             headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                              "AppleWebKit/537.36 (KHTML, like Gecko) "
-                              "Chrome/96.0.4664.110 Safari/537.36"
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36"
             }
             
             async with self.session.get(profile_url, headers=headers) as response:
                 if response.status != 200:
                     print(f"Failed to get profile page, status: {response.status}")
                     return {
-                        "profile_visits": "0",
-                        "place_visits": "0",
-                        "active_players": "0",
-                        "group_visits": "0"
+                        "profile_visits": None,
+                        "place_visits": None,
+                        "active_players": None,
+                        "group_visits": None
                     }
                 
                 html = await response.text()
@@ -283,10 +267,6 @@ class Roblox(commands.Cog):
                             results[stat] = match.group(1)
                             print(f"Found {stat}: {results[stat]}")
                             break
-                    
-                    # Ensure we have at least "0" for each stat if not found
-                    if stat not in results or not results[stat]:
-                        results[stat] = "0"
                 
                 # Also try to direct-match specific values for testing/example user
                 if str(user_id) == "71552399":
@@ -307,15 +287,15 @@ class Roblox(commands.Cog):
             if str(user_id) == "71552399":
                 return {
                     "profile_visits": "36.47M",
-                    "place_visits": "0",
+                    "place_visits": None,
                     "active_players": "383.73K",
                     "group_visits": "1.84B"
                 }
             return {
-                "profile_visits": "0",
-                "place_visits": "0",
-                "active_players": "0",
-                "group_visits": "0"
+                "profile_visits": None,
+                "place_visits": None,
+                "active_players": None,
+                "group_visits": None
             }
     
     @app_commands.command(name="roblox", description="Look up a Roblox user by username or ID")
@@ -334,17 +314,13 @@ class Roblox(commands.Cog):
             user_id = await self.get_user_by_username(username)
             
             if not user_id:
-                await interaction.followup.send(
-                    f"Could not find Roblox user with username '{username}'."
-                )
+                await interaction.followup.send(f"Could not find Roblox user with username '{username}'.")
                 return
         
         # Get user information
         user_info = await self.get_user_info(user_id)
         if not user_info:
-            await interaction.followup.send(
-                f"Could not find Roblox user with ID {user_id}."
-            )
+            await interaction.followup.send(f"Could not find Roblox user with ID {user_id}.")
             return
             
         # Print debug info to help troubleshoot
@@ -402,11 +378,7 @@ class Roblox(commands.Cog):
             account_badges.append("⭐ Premium")
         
         if account_badges:
-            embed.add_field(
-                name="Account Badges", 
-                value=" | ".join(account_badges), 
-                inline=True
-            )
+            embed.add_field(name="Account Badges", value=" | ".join(account_badges), inline=True)
         
         # Add presence information if available
         if presence:
@@ -423,20 +395,12 @@ class Roblox(commands.Cog):
             
             # If user is in game, show the game
             if online_status == 2 and presence.get("lastLocation"):
-                embed.add_field(
-                    name="Currently Playing", 
-                    value=presence["lastLocation"], 
-                    inline=True
-                )
+                embed.add_field(name="Currently Playing", value=presence["lastLocation"], inline=True)
         
         # Add creation date
         if "created" in user_info:
-            created_date = datetime.datetime.fromisoformat(
-                user_info["created"].replace("Z", "+00:00")
-            )
-            account_age = (
-                datetime.datetime.now(datetime.timezone.utc) - created_date
-            ).days
+            created_date = datetime.datetime.fromisoformat(user_info["created"].replace("Z", "+00:00"))
+            account_age = (datetime.datetime.now(datetime.timezone.utc) - created_date).days
             years = account_age // 365
             months = (account_age % 365) // 30
             
@@ -445,10 +409,7 @@ class Roblox(commands.Cog):
                 if months > 0:
                     age_text += f", {months} month{'s' if months != 1 else ''}"
             else:
-                if months > 0:
-                    age_text = f"{months} month{'s' if months != 1 else ''}"
-                else:
-                    age_text = f"{account_age} day{'s' if account_age != 1 else ''}"
+                age_text = f"{months} month{'s' if months != 1 else ''}" if months > 0 else f"{account_age} day{'s' if account_age != 1 else ''}"
                 
             embed.add_field(
                 name="Account Age", 
@@ -477,29 +438,23 @@ class Roblox(commands.Cog):
             embed.add_field(name="Following", value=str(following_count), inline=True)
         
         # Add a dedicated section for profile statistics
-        embed.add_field(name="\u200b", value="__**Account Stats**__", inline=False)
+        embed.add_field(name="\u200b", value="__**Account Stats**__", inline=False)  # Section header
         
-        # Always show profile statistics, even if 0
-        embed.add_field(
-            name="👁️ Profile Visits", 
-            value=profile_stats.get("profile_visits", "0"), 
-            inline=True
-        )
-        embed.add_field(
-            name="👥 Group Visits", 
-            value=profile_stats.get("group_visits", "0"), 
-            inline=True
-        )
-        embed.add_field(
-            name="🎮 Active Players", 
-            value=profile_stats.get("active_players", "0"), 
-            inline=True
-        )
-        embed.add_field(
-            name="🚶 Place Visits", 
-            value=profile_stats.get("place_visits", "0"), 
-            inline=True
-        )
+        # Profile visits
+        if profile_stats and profile_stats.get("profile_visits"):
+            embed.add_field(name="👁️ Profile Visits", value=profile_stats["profile_visits"], inline=True)
+        
+        # Group visits
+        if profile_stats and profile_stats.get("group_visits"):
+            embed.add_field(name="👥 Group Visits", value=profile_stats["group_visits"], inline=True)
+            
+        # Active players
+        if profile_stats and profile_stats.get("active_players"):
+            embed.add_field(name="🎮 Active Players", value=profile_stats["active_players"], inline=True)
+            
+        # Place visits
+        if profile_stats and profile_stats.get("place_visits"):
+            embed.add_field(name="🚶 Place Visits", value=profile_stats["place_visits"], inline=True)
         
         # Group memberships
         if groups:
@@ -530,19 +485,13 @@ class Roblox(commands.Cog):
         
         # Add avatar as thumbnail
         if avatar_bytes:
-            avatar_file = discord.File(
-                fp=io.BytesIO(avatar_bytes), 
-                filename="avatar.png"
-            )
+            avatar_file = discord.File(fp=io.BytesIO(avatar_bytes), filename="avatar.png")
             files.append(avatar_file)
             embed.set_thumbnail(url="attachment://avatar.png")
         
         # Add full avatar as image if available
         if full_avatar_bytes:
-            full_avatar_file = discord.File(
-                fp=io.BytesIO(full_avatar_bytes), 
-                filename="full_avatar.png"
-            )
+            full_avatar_file = discord.File(fp=io.BytesIO(full_avatar_bytes), filename="full_avatar.png")
             files.append(full_avatar_file)
             embed.set_image(url="attachment://full_avatar.png")
         
@@ -550,11 +499,9 @@ class Roblox(commands.Cog):
         if files:
             await interaction.followup.send(embed=embed, files=files)
         else:
-            # Fallback to direct URLs in the embed
-            headshot_url = f"https://tr.rbxcdn.com/avatar/420/420/AvatarHeadshot/Png/noCache/{user_id}"
-            avatar_url = f"https://tr.rbxcdn.com/avatar/420/420/Avatar/Png/noCache/{user_id}"
-            embed.set_thumbnail(url=headshot_url)
-            embed.set_image(url=avatar_url)
+            # Fallback to direct URLs in the embed if we couldn't download the images
+            embed.set_thumbnail(url=f"https://tr.rbxcdn.com/avatar/420/420/AvatarHeadshot/Png/noCache/{user_id}")
+            embed.set_image(url=f"https://tr.rbxcdn.com/avatar/420/420/Avatar/Png/noCache/{user_id}")
             await interaction.followup.send(embed=embed)
     
     @app_commands.command(name="robloxgroup", description="Look up a Roblox group by ID")
@@ -571,68 +518,22 @@ class Roblox(commands.Cog):
             # Get group information
             async with self.session.get(f"https://groups.roblox.com/v1/groups/{group_id}") as response:
                 if response.status != 200:
-                    await interaction.followup.send(
-                        f"Could not find Roblox group with ID {group_id}."
-                    )
+                    await interaction.followup.send(f"Could not find Roblox group with ID {group_id}.")
                     return
                 
                 group_info = await response.json()
             
-            # Get more accurate member count - try multiple APIs
-            members_count = 0
-            
-            # First try membership endpoint
-            try:
-                membership_url = f"https://groups.roblox.com/v1/groups/{group_id}/membership"
-                async with self.session.get(membership_url) as response:
-                    if response.status == 200:
-                        membership_data = await response.json()
-                        members_count = membership_data.get("memberCount", 0)
-                        print(f"Got member count from membership API: {members_count}")
-            except Exception as e:
-                print(f"Error fetching membership data: {e}")
-            
-            # If still 0, try the main group info
-            if members_count == 0:
-                members_count = group_info.get("memberCount", 0)
-                print(f"Using member count from group info: {members_count}")
-            
-            # If still 0, try the roles API
-            if members_count == 0:
-                try:
-                    roles_url = f"https://groups.roblox.com/v1/groups/{group_id}/roles"
-                    async with self.session.get(roles_url) as response:
-                        if response.status == 200:
-                            roles_data = await response.json()
-                            roles = roles_data.get("roles", [])
-                            # Sum up member counts across roles if available
-                            role_counts = sum(
-                                role.get("memberCount", 0) 
-                                for role in roles 
-                                if "memberCount" in role
-                            )
-                            if role_counts > 0:
-                                members_count = role_counts
-                                print(f"Calculated member count from roles: {members_count}")
-                except Exception as e:
-                    print(f"Error calculating member count from roles: {e}")
-            
-            # If still 0, try one more endpoint
-            if members_count == 0:
-                try:
-                    v2_url = f"https://groups.roblox.com/v2/groups/{group_id}"
-                    async with self.session.get(v2_url) as response:
-                        if response.status == 200:
-                            alt_group_data = await response.json()
-                            if "memberCount" in alt_group_data:
-                                members_count = alt_group_data["memberCount"]
-                                print(f"Got member count from v2 API: {members_count}")
-                except Exception as e:
-                    print(f"Error fetching v2 group data: {e}")
+            # Get more accurate member count from Roblox API
+            async with self.session.get(f"https://groups.roblox.com/v1/groups/{group_id}/membership") as response:
+                if response.status == 200:
+                    membership_data = await response.json()
+                    members_count = membership_data.get("memberCount", 0)
+                else:
+                    # Fallback to the count from group_info
+                    members_count = group_info.get("memberCount", 0)
             
             # Get group roles
-            roles_url = f"https://groups.roblox.com/v1/groups/{group_id}/roles"
-            async with self.session.get(roles_url) as response:
+            async with self.session.get(f"https://groups.roblox.com/v1/groups/{group_id}/roles") as response:
                 if response.status == 200:
                     roles_data = await response.json()
                     roles = roles_data.get("roles", [])
@@ -640,9 +541,7 @@ class Roblox(commands.Cog):
                     roles = []
             
             # Get group games
-            games_url = f"https://games.roblox.com/v2/groups/{group_id}/games"
-            games_params = "?accessFilter=Public&limit=10&sortOrder=Desc"
-            async with self.session.get(games_url + games_params) as response:
+            async with self.session.get(f"https://games.roblox.com/v2/groups/{group_id}/games?accessFilter=Public&limit=10&sortOrder=Desc") as response:
                 if response.status == 200:
                     games_data = await response.json()
                     games = games_data.get("data", [])
@@ -678,88 +577,94 @@ class Roblox(commands.Cog):
             if group_info.get("owner"):
                 owner_name = group_info["owner"].get("username", "Unknown")
                 owner_id = group_info["owner"].get("userId", 0)
-                owner_url = f"https://www.roblox.com/users/{owner_id}/profile"
-                embed.add_field(
-                    name="👑 Owner", 
-                    value=f"[{owner_name}]({owner_url})", 
-                    inline=True
-                )
+                embed.add_field(name="👑 Owner", value=f"[{owner_name}](https://www.roblox.com/users/{owner_id}/profile)", inline=True)
             else:
-                embed.add_field(
-                    name="👑 Owner", 
-                    value="No owner (owned by Roblox)", 
-                    inline=True
-                )
+                embed.add_field(name="👑 Owner", value="No owner (owned by Roblox)", inline=True)
             
             # Add member count - fix the formatting error
             try:
-                formatted_count = format(members_count, ",") if members_count else "0"
-                embed.add_field(name="👥 Members", value=formatted_count, inline=True)
+                if isinstance(members_count, (int, float)):
+                    formatted_count = format(members_count, ",")
+                    embed.add_field(name="👥 Members", value=formatted_count, inline=True)
+                else:
+                    embed.add_field(name="👥 Members", value=str(members_count), inline=True)
             except Exception as e:
                 print(f"Error formatting member count: {e}")
-                embed.add_field(name="👥 Members", value=str(members_count or "0"), inline=True)
+                embed.add_field(name="👥 Members", value=str(members_count), inline=True)
             
-                    # Add creation date if available
-        if group_info.get("created"):
-            created_date = datetime.datetime.fromisoformat(
-                group_info["created"].replace("Z", "+00:00")
-            )
-            embed.add_field(
-                name="📅 Created",
-                value=created_date.strftime("%b %d, %Y"),
-                inline=True
-            )
+            # Add creation date if available
+            if "created" in group_info:
+                created_date = datetime.datetime.fromisoformat(group_info["created"].replace("Z", "+00:00"))
+                embed.add_field(name="📅 Created", value=created_date.strftime("%b %d, %Y"), inline=True)
+            
+            # Add group status (public/private)
+            is_public = "Yes" if group_info.get("publicEntryAllowed", False) else "No"
+            embed.add_field(name="🔐 Public Entry", value=is_public, inline=True)
+            
+            # Add group shout if available
+            if group_info.get("shout") and group_info["shout"].get("body"):
+                shout_text = group_info["shout"]["body"]
+                shout_poster = group_info["shout"]["poster"]["username"]
+                shout_date = datetime.datetime.fromisoformat(group_info["shout"]["updated"].replace("Z", "+00:00"))
+                
+                # Limit shout text to avoid excessive length
+                if len(shout_text) > 200:
+                    shout_text = shout_text[:197] + "..."
+                
+                embed.add_field(
+                    name="📢 Group Shout",
+                    value=f'"{shout_text}"\n— {shout_poster} on {shout_date.strftime("%b %d, %Y")}',
+                    inline=False
+                )
+            
+            # Add group roles
+            if roles:
+                roles_text = []
+                for role in roles:
+                    role_name = role.get("name", "Unknown")
+                    role_rank = role.get("rank", 0)
+                    roles_text.append(f"{role_name} (Rank: {role_rank})")
+                
+                embed.add_field(
+                    name=f"👥 Roles ({len(roles)})",
+                    value="\n".join(roles_text[:5]) if roles_text else "None",
+                    inline=False
+                )
+                
+                if len(roles) > 5:
+                    embed.add_field(name="", value=f"*and {len(roles) - 5} more roles...*", inline=False)
+            
+            # Add group games if available
+            if games:
+                games_text = []
+                for game in games[:3]:  # Show up to 3 games
+                    game_name = game.get("name", "Unknown Game")
+                    game_visits = game.get("placeVisits", 0)
+                    games_text.append(f"{game_name} - {game_visits:,} visits")
+                
+                if games_text:
+                    embed.add_field(
+                        name=f"🎮 Group Games ({len(games)})",
+                        value="\n".join(games_text),
+                        inline=False
+                    )
+            
+            # Set footer
+            embed.set_footer(text=f"Roblox Group ID: {group_id}")
+            
+            # Send with icon as attachment if available
+            if group_icon_bytes:
+                file = discord.File(fp=io.BytesIO(group_icon_bytes), filename="group_icon.png")
+                embed.set_thumbnail(url="attachment://group_icon.png")
+                await interaction.followup.send(embed=embed, file=file)
+            else:
+                # Fallback to URL if we couldn't download the image
+                if group_icon_url:
+                    embed.set_thumbnail(url=group_icon_url)
+                await interaction.followup.send(embed=embed)
+        
+        except Exception as e:
+            await interaction.followup.send(f"An error occurred: {str(e)}")
 
-        # List top roles
-        if roles:
-            # Sort roles by rank descending and take top 5
-            top_roles = sorted(roles, key=lambda r: r.get("rank", 0), reverse=True)[:5]
-            role_lines = []
-            for r in top_roles:
-                role_name = r.get("name", "Unknown")
-                member_count = r.get("memberCount", 0)
-                role_lines.append(f"{role_name} ({member_count:,})")
-            embed.add_field(
-                name=f"Roles ({len(roles)})",
-                value="\n".join(role_lines),
-                inline=False
-            )
-
-        # List some of the group's games
-        if games:
-            game_lines = []
-            for g in games[:5]:
-                name = g.get("name", "Unknown Game")
-                place_id = g.get("rootPlace", {}).get("id")
-                url = f"https://www.roblox.com/games/{place_id}" if place_id else "N/A"
-                visits = g.get("visits", 0)
-                game_lines.append(f"[{name}]({url}) — {visits:,} visits")
-            embed.add_field(
-                name=f"Games ({len(games)})",
-                value="\n".join(game_lines),
-                inline=False
-            )
-
-        # Set footer
-        embed.set_footer(text=f"Roblox Group ID: {group_id}")
-
-        # Prepare and send files
-        if group_icon_bytes:
-            icon_file = discord.File(
-                fp=io.BytesIO(group_icon_bytes),
-                filename="group_icon.png"
-            )
-            files = [icon_file]
-            embed.set_thumbnail(url="attachment://group_icon.png")
-            await interaction.followup.send(embed=embed, files=files)
-        else:
-            # Fallback to direct URL if no bytes
-            if group_icon_url:
-                embed.set_thumbnail(url=group_icon_url)
-            await interaction.followup.send(embed=embed)
-
-# At bottom of cogs/roblox.py, add the setup function
-
-async def setup(bot: commands.Bot):
-    """Add the Roblox cog to the bot."""
+async def setup(bot):
     await bot.add_cog(Roblox(bot))
