@@ -173,11 +173,12 @@ class LoveCalc(commands.Cog):
             heart_color = (0, 0, 255, 255)  # Red (BGR format)
             cv2.putText(heart_img, "♥", (heart_size//4, heart_size*3//4), cv2.FONT_HERSHEY_SIMPLEX, 2, heart_color, 3)
         
-        # Add percentage text to the image (below the heart)
+        # Add percentage text to the image (centered on top of the heart)
         text = f"{percentage}%"
         font = cv2.FONT_HERSHEY_SIMPLEX
-        font_scale = 0.7
-        text_size = cv2.getTextSize(text, font, font_scale, 2)[0]
+        font_scale = 1.2  # Larger font
+        thickness = 3     # Thicker text
+        text_size = cv2.getTextSize(text, font, font_scale, thickness)[0]
         
         # Place avatars and heart on the image
         try:
@@ -203,13 +204,18 @@ class LoveCalc(commands.Cog):
                         if (0 <= heart_pos_y + y < height and 0 <= heart_pos_x + x < width):
                             image[heart_pos_y + y, heart_pos_x + x] = heart_img[y, x]
             
-            # Place percentage text below the heart
+            # Place percentage text centered on top of the heart
             text_pos_x = (width - text_size[0]) // 2
-            text_pos_y = heart_pos_y + heart_size + text_size[1] + 5
+            text_pos_y = heart_pos_y - 10  # Position above the heart
             
-            # Only add text if it fits within the image height
-            if text_pos_y < height - 5:
-                cv2.putText(image, text, (text_pos_x, text_pos_y), font, font_scale, (255, 255, 255, 255), 2)
+            # Draw text with black outline for better visibility
+            cv2.putText(image, text, (text_pos_x-1, text_pos_y-1), font, font_scale, (0, 0, 0, 255), thickness+1)
+            cv2.putText(image, text, (text_pos_x+1, text_pos_y-1), font, font_scale, (0, 0, 0, 255), thickness+1)
+            cv2.putText(image, text, (text_pos_x-1, text_pos_y+1), font, font_scale, (0, 0, 0, 255), thickness+1)
+            cv2.putText(image, text, (text_pos_x+1, text_pos_y+1), font, font_scale, (0, 0, 0, 255), thickness+1)
+            
+            # Draw white text on top
+            cv2.putText(image, text, (text_pos_x, text_pos_y), font, font_scale, (255, 255, 255, 255), thickness)
         
         except Exception as e:
             print(f"Error compositing image: {e}")
