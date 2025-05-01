@@ -645,6 +645,7 @@ class Roblox(commands.Cog):
                 )
 
                 # Add roles information
+            # Add roles information
             if roles:
                 # Sort roles by rank
                 roles.sort(key=lambda x: x.get("rank", 0))
@@ -716,55 +717,124 @@ class Roblox(commands.Cog):
             return
         
         try:
-            # Get game information
-            async with self.session.get(f"https://games.roblox.com/v1/games/multiget-place-details?placeIds={game_id}") as response:
-                if response.status != 200 or not await response.json():
-                    await interaction.followup.send(f"Could not find Roblox game with ID {game_id}.")
-                    return
-                
-                places_data = await response.json()
-                if not places_data or len(places_data) == 0:
-                    await interaction.followup.send(f"Could not find Roblox game with ID {game_id}.")
-                    return
-                
-                place_info = places_data[0]
+            print(f"Looking up Roblox game with ID: {game_id}")
+            # Try multiple endpoints for game info - Roblox API changes often
+            universe_id = None
+            place_info = None
+            game_info = {}
             
-            # Get universe ID for more info
-            universe_id = place_info.get("universeId")
+            # First try to get place details
+            try:
+                async with self.session.get(f"https://games.roblox.com/v1/games/multiget-place-details?placeIds={game_id}") as response:
+                    if response.status == 200:
+                        places_data = await response.json()
+                        if places_data and len(places_data) > 0:
+                            place_info = places_data[0]
+                            universe_id = place_info.get("universeId")
+                            print(f"Found place info: {place_info}")
+                            print(f"Universe ID: {universe_id}")
+            except Exception as e:
+                print(f"Error fetching place details: {e}")
+            
+            # If no universe ID yet, try another endpoint
             if not universe_id:
-                await interaction.followup.send(f"Could not find complete information for game with ID {game_id}.")
+                try:
+                    async with self.session.get(f"https://apis.roblox.com/universes/v1/places/{game_id}/universe") as response:
+                        if response.status == 200:
+                            universe_data = await response.json()
+                            universe_id = universe_data.get("universeId")
+                            print(f"Got universe ID from alternate API: {universe_id}")
+                except Exception as e:
+                    print(f"Error getting universe ID: {e}")
+            
+            # If still no universe ID, try one more method
+            if not universe_id and place_info is None:
+                try:
+                    async with self.session.get(f"https://www.roblox.com/places/api-get-details?assetId={game_id}") as response:
+                        if response.status == 200:
+                            legacy_place_data = await response.json()
+                            place_info = {
+                                "name": legacy_place_data.get("Name", "Unknown Game"),
+                                "description": legacy_place_data.get("Description", "No description"),
+                                "builderId": legacy_place_data.get("BuilderId"),
+                                "builderName": legacy_place_data.get("Builder", "Unknown")
+                            }
+                            print(f"Got legacy place data: {place_info}")
+                except Exception as e:
+                    print(f"Error getting legacy place data: {e}")
+            
+            # If we have a universe ID, get full game info
+            if universe_id:
+                try:
+                    async with self.session.get(f"https://games.roblox.com/v1/games?universeIds={universe_id}") as response:
+                        if response.status == 200:
+                            universe_data = await response.json()
+                            if "data" in universe_data and universe_data["data"]:
+                                game_info = universe_data["data"][0]
+                                print(f"Got game info: {game_info}")
+                except Exception as e:
+                    print(f"Error getting game info: {e}")
+            
+            # If we still don't have enough info, try one more source
+            if not place_info and not game_info:
+                try:
+                    # Try getting game info from the games API directly
+                    async with self.session.get(f"https://games.roblox.com/v1/games/games-detail?universeIds={game_id}") as response:
+                        if response.status == 200:
+                            direct_game_data = await response.json()
+                            if "data" in direct_game_data and direct_game_data["data"]:
+                                game_info = direct_game_data["data"][0]
+                                universe_id = game_id  # Assume it's a universe ID in this case
+                                print(f"Got direct game data: {game_info}")
+                except Exception as e:
+                    print(f"Error getting direct game data: {e}")
+            
+            # If we still don't have enough info, give up
+            if not place_info and not game_info:
+                await interaction.followup.send(f"Could not find Roblox game with ID {game_id}.")
                 return
             
-            # Get universe info
-            async with self.session.get(f"https://games.roblox.com/v1/games?universeIds={universe_id}") as response:
-                if response.status == 200:
-                    universe_data = await response.json()
-                    if "data" in universe_data and universe_data["data"]:
-                        game_info = universe_data["data"][0]
-                    else:
-                        game_info = {}
-                else:
-                    game_info = {}
-            
-            # Get game icon
+            # Get game icon - try multiple methods
             game_icon_bytes = None
-            try:
-                async with self.session.get(f"https://thumbnails.roblox.com/v1/games/icons?universeIds={universe_id}&size=256x256&format=Png") as response:
-                    if response.status == 200:
-                        thumbnails_data = await response.json()
-                        if "data" in thumbnails_data and thumbnails_data["data"]:
-                            icon_url = thumbnails_data["data"][0].get("imageUrl")
-                            if icon_url:
-                                async with self.session.get(icon_url) as img_response:
-                                    if img_response.status == 200:
-                                        game_icon_bytes = await img_response.read()
-            except Exception as e:
-                print(f"Error getting game icon: {str(e)}")
+            
+            # Method 1: Use thumbnails API with universe ID
+            if universe_id:
+                try:
+                    async with self.session.get(f"https://thumbnails.roblox.com/v1/games/icons?universeIds={universe_id}&size=256x256&format=Png") as response:
+                        if response.status == 200:
+                            thumbnails_data = await response.json()
+                            if "data" in thumbnails_data and thumbnails_data["data"]:
+                                icon_url = thumbnails_data["data"][0].get("imageUrl")
+                                if icon_url:
+                                    async with self.session.get(icon_url) as img_response:
+                                        if img_response.status == 200:
+                                            game_icon_bytes = await img_response.read()
+                                            print("Got game icon from thumbnails API")
+                except Exception as e:
+                    print(f"Error getting game icon from thumbnails API: {e}")
+            
+            # Method 2: Try asset thumbnail API
+            if not game_icon_bytes:
+                try:
+                    async with self.session.get(f"https://thumbnails.roblox.com/v1/assets?assetIds={game_id}&size=250x250&format=Png") as response:
+                        if response.status == 200:
+                            asset_thumb_data = await response.json()
+                            if "data" in asset_thumb_data and asset_thumb_data["data"]:
+                                icon_url = asset_thumb_data["data"][0].get("imageUrl")
+                                if icon_url:
+                                    async with self.session.get(icon_url) as img_response:
+                                        if img_response.status == 200:
+                                            game_icon_bytes = await img_response.read()
+                                            print("Got game icon from asset API")
+                except Exception as e:
+                    print(f"Error getting game icon from asset API: {e}")
             
             # Get game voting/favorites
             favorites_count = game_info.get("favoritesCount", 0)
             upvotes = game_info.get("totalUpVotes", 0)
             downvotes = game_info.get("totalDownVotes", 0)
+            playing = game_info.get("playing", 0)
+            visits = game_info.get("visits", 0)
             
             # Get creator info
             creator_name = "Unknown"
@@ -775,97 +845,7 @@ class Roblox(commands.Cog):
             if "creator" in game_info:
                 creator_name = game_info["creator"].get("name", "Unknown")
                 creator_id = game_info["creator"].get("id", 0)
-                creator_type = game_info["creator"].get("type", "User")
-                
-                if creator_type == "User":
-                    creator_url = f"https://www.roblox.com/users/{creator_id}/profile"
-                else:  # Group
-                    creator_url = f"https://www.roblox.com/groups/{creator_id}/group"
-            
-            # Create embed
-            embed = discord.Embed(
-                title=game_info.get("name", place_info.get("name", "Unknown Game")),
-                description=game_info.get("description", "No description") or "No description",
-                color=discord.Color.from_rgb(226, 35, 26),  # Roblox red
-                timestamp=datetime.datetime.now(),
-                url=f"https://www.roblox.com/games/{game_id}"
-            )
-            
-            # Add creator info
-            embed.add_field(
-                name="Creator",
-                value=f"[{creator_name}]({creator_url}) ({creator_type})",
-                inline=True
-            )
-            
-            # Add player counts
-            playing = game_info.get("playing", 0)
-            visits = game_info.get("visits", 0)
-            
-            embed.add_field(name="👥 Playing Now", value=format(playing, ","), inline=True)
-            embed.add_field(name="🎮 Total Visits", value=format(visits, ","), inline=True)
-            
-            # Add voting info
-            if upvotes or downvotes:
-                total_votes = upvotes + downvotes
-                like_percentage = (upvotes / total_votes * 100) if total_votes > 0 else 0
-                embed.add_field(
-                    name="👍 Rating",
-                    value=f"{like_percentage:.1f}% ({format(upvotes, ',')} up, {format(downvotes, ',')} down)",
-                    inline=True
-                )
-            
-            # Add favorites
-            embed.add_field(name="⭐ Favorites", value=format(favorites_count, ","), inline=True)
-            
-            # Add creation/update dates
-            if "created" in game_info:
-                created_date = datetime.datetime.fromisoformat(game_info["created"].replace("Z", "+00:00"))
-                embed.add_field(name="📅 Created", value=created_date.strftime("%b %d, %Y"), inline=True)
-            
-            if "updated" in game_info:
-                updated_date = datetime.datetime.fromisoformat(game_info["updated"].replace("Z", "+00:00"))
-                embed.add_field(name="📝 Last Updated", value=updated_date.strftime("%b %d, %Y"), inline=True)
-            
-            # Add genre and allowed gear types
-            if "genre" in game_info:
-                embed.add_field(name="🏷️ Genre", value=game_info["genre"], inline=True)
-            
-            # Add max players
-            max_players = game_info.get("maxPlayers", 0)
-            if max_players:
-                embed.add_field(name="👨‍👩‍👧‍👦 Max Players", value=max_players, inline=True)
-            
-            # Add game age rating
-            if "gameRating" in game_info:
-                embed.add_field(name="🔞 Age Rating", value=game_info["gameRating"].get("name", "Unknown"), inline=True)
-            
-            # Add VIP servers info if available
-            if "price" in game_info:
-                vip_price = game_info["price"]
-                if vip_price == 0:
-                    vip_text = "Free"
-                else:
-                    vip_text = f"{vip_price} Robux"
-                
-                embed.add_field(name="🔑 VIP Servers", value=vip_text, inline=True)
-            
-            # Set footer
-            embed.set_footer(text=f"Game ID: {game_id} | Universe ID: {universe_id}")
-            
-            # Add game icon
-            if game_icon_bytes:
-                game_icon_file = discord.File(fp=io.BytesIO(game_icon_bytes), filename="game_icon.png")
-                embed.set_thumbnail(url="attachment://game_icon.png")
-                await interaction.followup.send(embed=embed, file=game_icon_file)
-            else:
-                # Fallback URL
-                embed.set_thumbnail(url=f"https://www.roblox.com/asset-thumbnail/image?assetId={game_id}&width=256&height=256&format=png")
-                await interaction.followup.send(embed=embed)
-                
-        except Exception as e:
-            print(f"Error in roblox_game_lookup: {str(e)}")
-            await interaction.followup.send(f"An error occurred while trying to fetch the game information: {str(e)}")
+                creator_type = game_info["
     
     @app_commands.command(name="robloxfriends", description="Look up a Roblox user's friends")
     @app_commands.describe(username="Roblox username or user ID", page="Page number (default: 1)")
