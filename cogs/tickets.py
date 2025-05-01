@@ -577,16 +577,22 @@ class ClosedTicketView(ui.View):
         # Create new open ticket view
         view = OpenTicketView(self.bot)
         
-        # Send message about ticket being reopened and add the view to persistent views
-        reopen_message = await interaction.response.send_message(
+        # Send message about ticket being reopened
+        await interaction.response.send_message(
             embed=embed,
             view=view,
-            ephemeral=False,
-            return_message=True
+            ephemeral=False
         )
         
-        # Add the view to bot's persistent views with the new message ID
-        self.bot.add_view(view, message_id=reopen_message.id)
+        # Get the message reference to add the view to persistent views
+        try:
+            # Get the original response message to add the view
+            original_message = await interaction.original_response()
+            # Add the view to bot's persistent views with the message ID
+            self.bot.add_view(view, message_id=original_message.id)
+        except Exception as e:
+            # If we can't get the original response, at least log the error
+            print(f"Error registering view for reopened ticket: {e}")
 
 class ConfirmView(ui.View):
     def __init__(self):
