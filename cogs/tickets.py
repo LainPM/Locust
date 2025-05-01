@@ -222,7 +222,90 @@ class OpenTicketView(ui.View):
 
     async def _on_close(self, interaction: discord.Interaction):
         """Handle ticket closing button press"""
-        await interaction.response.send_modal(CloseModal(self.bot))
+        # Use simpler direct approach rather than modal for reopened tickets
+        # This fixes the issue where nothing happens when closing after reopening
+        channel = interaction.channel
+        guild_id = interaction.guild.id
+        
+        # Get the ticket data first
+        ticket_data = await self.bot.cogs["TicketSystem"].tickets_col.find_one(
+            {"guild_id": guild_id, "channel_id": channel.id}
+        )
+        
+        if not ticket_data:
+            await interaction.response.send_message(
+                "Error: Ticket data not found. Please contact an administrator.",
+                ephemeral=True
+            )
+            return
+            
+        # Check if this is a reopened ticket (has been closed before)
+        if ticket_data.get("reopened_by") is not None:
+            # For reopened tickets, skip the modal and close directly
+            await interaction.response.defer(ephemeral=False)
+            
+            # Update ticket status in MongoDB
+            timestamp = datetime.utcnow()
+            close_reason = "Ticket closed after reopening"
+            
+            await self.bot.cogs["TicketSystem"].tickets_col.update_one(
+                {"guild_id": guild_id, "channel_id": channel.id},
+                {"$set": {
+                    "status": "closed",
+                    "updated_at": timestamp,
+                    "closed_by": interaction.user.id,
+                    "close_reason": close_reason
+                }}
+            )
+            
+            # Rename channel if needed
+            if not channel.name.endswith("-closed"):
+                try:
+                    new_name = f"{channel.name}-closed"
+                    await channel.edit(name=new_name)
+                except Exception as e:
+                    print(f"Error renaming channel: {e}")
+            
+            # Remove permissions from ticket creator
+            creator_id = ticket_data.get("user_id")
+            if creator_id:
+                creator = interaction.guild.get_member(creator_id)
+                if creator:
+                    try:
+                        await channel.set_permissions(creator, send_messages=False)
+                    except Exception as e:
+                        print(f"Error updating permissions: {e}")
+            
+            # Send closed message with buttons
+            embed = discord.Embed(
+                title=f"Ticket {ticket_data.get('case_number')} Closed",
+                description=f"This ticket has been closed by {interaction.user.mention}",
+                color=discord.Color.red(),
+                timestamp=timestamp
+            )
+            embed.add_field(name="Reason", value=close_reason, inline=False)
+            
+            view = ClosedTicketView(self.bot)
+            
+            try:
+                message = await interaction.followup.send(
+                    embed=embed,
+                    view=view,
+                    ephemeral=False
+                )
+                # Register the view
+                self.bot.add_view(view, message_id=message.id)
+            except Exception as e:
+                print(f"Error sending followup: {e}")
+                # Fallback to channel.send
+                message = await channel.send(
+                    embed=embed,
+                    view=view
+                )
+                self.bot.add_view(view, message_id=message.id)
+        else:
+            # For first-time close, use the modal as before
+            await interaction.response.send_modal(CloseModal(self.bot))
 
 class CloseModal(ui.Modal, title="Close Ticket"):
     def __init__(self, bot):
