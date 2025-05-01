@@ -35,10 +35,12 @@ class Roblox(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.session = None  # We'll initialize in setup hook
+        print("Roblox cog initialized")
     
     async def cog_load(self):
         # Initialize aiohttp session when the cog is loaded
         self.session = aiohttp.ClientSession()
+        print("Roblox cog loaded - aiohttp session initialized")
     
     async def cog_unload(self):
         # Close the aiohttp session when the cog is unloaded
@@ -346,10 +348,27 @@ class Roblox(commands.Cog):
             embed.set_thumbnail(url=f"https://www.roblox.com/avatar-thumbnail/image?userId={user_id}&width=420&height=420&format=png")
             await interaction.followup.send(embed=embed)
     
+    @commands.command(name="roblox_legacy")
+    async def roblox_legacy(self, ctx, *, identifier=None):
+        """Traditional command version for looking up Roblox users"""
+        if not identifier:
+            await ctx.send("Please provide a Roblox username or ID.")
+            return
+        
+        # Create a mock interaction for compatibility with the lookup method
+        # This is a simplified approach - in a real bot you might want to handle this differently
+        class MockInteraction:
+            async def followup(self, send):
+                return ctx
+            
+        mock_interaction = MockInteraction()
+        mock_interaction.followup = ctx
+        
+        await self.lookup_and_respond(mock_interaction, identifier)
+
+    # App command for Roblox lookup
     @app_commands.command(name="roblox", description="Look up a Roblox user by username or ID")
-    @app_commands.describe(
-        identifier="Roblox username or user ID"
-    )
+    @app_commands.describe(identifier="Roblox username or user ID")
     async def roblox_lookup(self, interaction: discord.Interaction, identifier: Optional[str] = None):
         """Look up a Roblox user by username or ID"""
         # If no identifier is provided, show a modal to enter username
@@ -362,10 +381,9 @@ class Roblox(commands.Cog):
         await interaction.response.defer()
         await self.lookup_and_respond(interaction, identifier)
     
-    @app_commands.command(name="robloxdiscord", description="Look up a Discord user's Roblox profile if linked")
-    @app_commands.describe(
-        user="Discord user to look up"
-    )
+    # App command for Discord user's Roblox lookup
+    @app_commands.command(name="robloxuser", description="Look up a Discord user's Roblox profile if linked")
+    @app_commands.describe(user="Discord user to look up")
     async def roblox_discord_lookup(self, interaction: discord.Interaction, user: discord.User):
         """Look up a Discord user's linked Roblox account (if possible)"""
         await interaction.response.defer()
@@ -405,10 +423,9 @@ class Roblox(commands.Cog):
         
         await interaction.followup.send(embed=embed)
     
+    # App command for Roblox group lookup
     @app_commands.command(name="robloxgroup", description="Look up a Roblox group by ID")
-    @app_commands.describe(
-        group_id="Roblox group ID"
-    )
+    @app_commands.describe(group_id="Roblox group ID")
     async def roblox_group_lookup(self, interaction: discord.Interaction, group_id: str):
         """Look up a Roblox group by ID"""
         await interaction.response.defer()
@@ -544,4 +561,30 @@ class Roblox(commands.Cog):
             await interaction.followup.send(f"An error occurred: {str(e)}")
 
 async def setup(bot):
-    await bot.add_cog(Roblox(bot))
+    print(f"Setting up Roblox cog...")
+    try:
+        # Create instance of the cog
+        cog = Roblox(bot)
+        
+        # Add the cog to the bot
+        await bot.add_cog(cog)
+        
+        # Force sync commands with Discord
+        # Note: In production, you wouldn't do this with every cog load
+        # as it can hit rate limits. Normally this is done once at bot startup.
+        try:
+            # Sync commands with Discord
+            synced = await bot.tree.sync()
+            print(f"Synced {len(synced)} commands")
+            
+            # Print all registered commands for debugging
+            commands = [command.name for command in bot.tree.get_commands()]
+            print(f"Registered commands: {commands}")
+        except Exception as e:
+            print(f"Error syncing commands: {e}")
+        
+        print(f"Roblox cog added successfully!")
+    except Exception as e:
+        print(f"Error loading Roblox cog: {e}")
+        import traceback
+        traceback.print_exc()
