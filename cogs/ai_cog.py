@@ -52,6 +52,9 @@ class AICog(commands.Cog):
         # Approximate token count per message
         self.avg_tokens_per_message = 100
         
+        # Special token to indicate conversation ending
+        self.end_conversation_token = "[END_CONVERSATION]"
+        
         # API Key for Gemini
         self.gemini_api_key = os.getenv('GEMINI_API_KEY')
         
@@ -235,6 +238,70 @@ class AICog(commands.Cog):
                 print(f"AI Cog: Error in cleanup task: {e}")
                 await asyncio.sleep(60)
 
+    async def query_gemini_simple(self, messages: List[Dict]) -> str:
+        """Simplified Gemini API query for intent detection"""
+        gemini_messages = []
+        
+        for message in messages:
+            role = message["role"]
+            content = message["content"]
+            
+            # Map Discord bot roles to Gemini roles
+            if role == "system":
+                gemini_role = "user"  
+                content = f"Instructions: {content}"
+            elif role == "user":
+                gemini_role = "user"
+            elif role == "assistant":
+                gemini_role = "model"
+            else:
+                continue  
+                
+            gemini_messages.append({
+                "role": gemini_role,
+                "parts": [{"text": content}]
+            })
+        
+        # Prepare request payload with lower temperature for more deterministic YES/NO response
+        payload = {
+            "contents": gemini_messages,
+            "generationConfig": {
+                "temperature": 0.1,
+                "maxOutputTokens": 10,
+                "topP": 0.95,
+                "topK": 40
+            }
+        }
+        
+        # Make API request
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    self.api_endpoint,
+                    json=payload,
+                    headers={"Content-Type": "application/json"}
+                ) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        response_text = result.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+                        return response_text
+                    else:
+                        return "ERROR"
+        except Exception as e:
+            print(f"AI Cog: Error in simple query: {e}")
+            return "ERROR"
+
+    async def detect_end_intent(self, message_text: str) -> bool:
+        """Detect if a message indicates intent to end conversation"""
+        # This function directly asks the AI if the message indicates an intent to end the conversation
+        prompt = [{
+            "role": "user", 
+            "content": f'Does this message indicate the user wants to end a conversation? Reply with only "YES" or "NO": "{message_text}"'
+        }]
+        
+        response = await self.query_gemini_simple(prompt)
+        return "YES" in response.strip().upper()
+
     async def query_gemini(self, messages: List[Dict]) -> str:
         """Query Gemini API"""
         # Format messages for Gemini API
@@ -316,12 +383,19 @@ class AICog(commands.Cog):
         
         # If message starts with "Hey Axis" or conversation is active
         if content.lower().startswith("hey axis") or is_active:
-            # Check for conversation exit commands
-            if is_active and content.lower() in ["stop", "end", "exit", "bye", "goodbye", "end chat", "stop chat", "stop talking", "ok stop", "okay stop", "ok thats all", "ok that's all", "thats all", "that's all"]:
-                await self.mark_conversation_inactive(user_id, channel_id)
-                # Use reply() instead of channel.send()
-                await message.reply("I'll be here if you need me again! Just say 'Hey Axis'.")
-                return
+            # If user is in an active conversation, first check if they're trying to end it
+            # Only do this if the message doesn't start with "Hey Axis" (which would be a new query)
+            if is_active and not content.lower().startswith("hey axis"):
+                # Use AI to detect if this is an intent to end the conversation
+                try:
+                    should_end = await self.detect_end_intent(content)
+                    if should_end:
+                        await self.mark_conversation_inactive(user_id, channel_id)
+                        await message.reply("I'll be here if you need me again! Just say 'Hey Axis'.")
+                        return
+                except Exception as e:
+                    print(f"AI Cog: Error detecting end intent: {e}")
+                    # Continue with normal processing if intent detection fails
                 
             # If message starts with "Hey Axis", remove that part to get the query
             if content.lower().startswith("hey axis"):
@@ -329,8 +403,7 @@ class AICog(commands.Cog):
                 
                 # If no query after "Hey Axis", just greet
                 if not query:
-                    # Use reply() instead of channel.send()
-                    await message.reply("Hey there! How can I help you today? We're now in conversation mode, so you can keep chatting with me without saying 'Hey Axis' each time. Just say 'stop' when you're done.")
+                    await message.reply("Hey there! How can I help you today? We're now in conversation mode, so you can keep chatting with me without saying 'Hey Axis' each time.")
                     await self.mark_conversation_active(user_id, channel_id)
                     return
             else:
@@ -358,11 +431,11 @@ class AICog(commands.Cog):
         # Get conversation history
         conversation = await self.get_conversation(user_id, channel_id)
         
-        # If no conversation yet, add system message
+        # If no conversation yet, add system message with smart ending detection instructions
         if not conversation:
             conversation = [{
                 "role": "system",
-                "content": "You are Axis, a helpful AI assistant for Discord. Be concise, friendly, and helpful. The user can chat with you in conversation mode, and they don't need to prefix messages with 'Hey Axis' during an active conversation. If they say 'stop', 'end', 'exit', 'bye', or 'goodbye', end the conversation politely."
+                "content": f"You are Axis, a helpful AI assistant for Discord. Be concise, friendly, and helpful. The user can chat with you in conversation mode, and they don't need to prefix messages with 'Hey Axis' during an active conversation. IMPORTANTLY, you should recognize when a user wants to end the conversation, even if they express it casually (e.g., 'that's all I needed', 'thanks for your help', 'I'll talk to you later', etc.). If you detect the user wants to end the conversation, respond appropriately and include {self.end_conversation_token} at the end of your message (which will be automatically removed before the user sees it)."
             }]
         
         # Add user message
@@ -376,7 +449,7 @@ class AICog(commands.Cog):
         
         # If approaching token limit, warn user and continue
         if estimated_tokens > self.max_tokens_warning and estimated_tokens <= self.max_tokens_limit:
-            await message.reply("⚠️ Our conversation is getting quite long. Consider saying 'end chat' soon to restart with a fresh context.")
+            await message.reply("⚠️ Our conversation is getting quite long. Consider ending it soon to restart with a fresh context.")
         
         # If exceeding token limit, auto-end conversation
         if estimated_tokens > self.max_tokens_limit:
@@ -391,6 +464,36 @@ class AICog(commands.Cog):
         # Generate response
         response_text = await self.query_gemini(trimmed_conversation)
         
+        # Check if AI has indicated to end the conversation with the special token
+        if self.end_conversation_token in response_text:
+            # Remove the token before showing the response to the user
+            clean_response = response_text.replace(self.end_conversation_token, "").strip()
+            
+            # Add the cleaned response to conversation history
+            conversation.append({
+                "role": "assistant",
+                "content": clean_response
+            })
+            
+            # Save updated conversation
+            await self.save_conversation(user_id, channel_id, conversation)
+            
+            # Send response to user
+            if len(clean_response) > 2000:
+                chunks = [clean_response[i:i+1990] for i in range(0, len(clean_response), 1990)]
+                for i, chunk in enumerate(chunks):
+                    if i == 0:
+                        await message.reply(chunk)
+                    else:
+                        await message.channel.send(chunk)
+            else:
+                await message.reply(clean_response)
+            
+            # End the conversation since AI indicated it should end
+            await self.mark_conversation_inactive(user_id, channel_id)
+            return
+        
+        # Normal response handling if not ending conversation
         # Add assistant response to conversation
         conversation.append({
             "role": "assistant",
