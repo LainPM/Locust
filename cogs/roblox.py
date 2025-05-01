@@ -419,7 +419,7 @@ class Roblox(commands.Cog):
         
         # Add status if available
         if status and status.get("status"):
-            embed.add_field(name="Status", value=status["status"], inline=False)
+            embed.add_field(name="Status", value=status["status"], inline=True)
         
         # Add social statistics with safe formatting
         try:
