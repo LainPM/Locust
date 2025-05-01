@@ -1,14 +1,95 @@
 # cogs/moderation.py
 import discord
 from discord.ext import commands
-from discord import app_commands
+from discord import app_commands, ui
 import datetime
+
+class PaginationView(ui.View):
+    def __init__(self, mod_logs, logs_per_page=5, timeout=180):
+        super().__init__(timeout=timeout)
+        self.mod_logs = mod_logs
+        self.logs_per_page = logs_per_page
+        self.current_page = 1
+        self.max_pages = ((len(mod_logs) - 1) // logs_per_page) + 1
+
+    @ui.button(label="Previous", style=discord.ButtonStyle.secondary, disabled=True)
+    async def previous_button(self, interaction: discord.Interaction, button: ui.Button):
+        self.current_page -= 1
+        # Disable previous button if we're on the first page
+        if self.current_page == 1:
+            button.disabled = True
+        # Enable next button if it was disabled
+        self.next_button.disabled = False
+        
+        # Update the embed with the new page
+        embed = self.create_log_embed(interaction)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @ui.button(label="Next", style=discord.ButtonStyle.primary)
+    async def next_button(self, interaction: discord.Interaction, button: ui.Button):
+        self.current_page += 1
+        # Disable next button if we're on the last page
+        if self.current_page == self.max_pages:
+            button.disabled = True
+        # Enable previous button if it was disabled
+        self.previous_button.disabled = False
+        
+        # Update the embed with the new page
+        embed = self.create_log_embed(interaction)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    def create_log_embed(self, interaction):
+        target_user = interaction.message.embeds[0].title.split(" for ")[1]
+        user_id = interaction.message.embeds[0].footer.text.split(": ")[1]
+        
+        # Calculate start and end indices for the current page
+        start_idx = (self.current_page - 1) * self.logs_per_page
+        end_idx = min(start_idx + self.logs_per_page, len(self.mod_logs))
+        current_logs = self.mod_logs[start_idx:end_idx]
+        
+        # Create embed for current page
+        embed = discord.Embed(
+            title=f"Moderation Logs for {target_user}",
+            description=f"Showing logs {start_idx+1}-{end_idx} of {len(self.mod_logs)}",
+            color=discord.Color.from_rgb(255, 165, 0),  # Orange color
+            timestamp=datetime.datetime.now()
+        )
+        
+        for log in current_logs:
+            action_type = log["action_type"]
+            reason = log["reason"]
+            moderator_id = log["moderator_id"]
+            timestamp = log["timestamp"].strftime("%Y-%m-%d %H:%M:%S") if isinstance(log["timestamp"], datetime.datetime) else "Unknown time"
+            
+            # Get moderator mention if possible
+            moderator = interaction.guild.get_member(moderator_id) or "Unknown Moderator"
+            moderator_mention = moderator.mention if isinstance(moderator, discord.Member) else moderator
+            
+            # Format the field value based on action type
+            value = f"**Reason:** {reason}\n**By:** {moderator_mention}\n**When:** {timestamp}"
+            
+            # Add action-specific details if they exist
+            if "duration" in log and log["duration"]:
+                value += f"\n**Duration:** {log['duration']} minutes"
+            if "delete_days" in log and log["delete_days"]:
+                value += f"\n**Messages Deleted:** {log['delete_days']} days"
+                
+            embed.add_field(
+                name=f"{action_type.title()} | {timestamp}",
+                value=value,
+                inline=False
+            )
+        
+        # Set footer and thumbnail
+        embed.set_footer(text=f"User ID: {user_id} | Page {self.current_page}/{self.max_pages}")
+        
+        return embed
 
 class Moderation(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        # Reference to MongoDB collection for warnings
-        self.warnings_collection = bot.warnings_collection
+        # Reference to MongoDB collection for moderation logs
+        self.modlogs_collection = bot.warnings_collection  # Using the same collection for now
 
     # Helper function to check if user has permission to moderate
     def check_permissions(self, interaction: discord.Interaction) -> bool:
@@ -29,6 +110,34 @@ class Moderation(commands.Cog):
         embed.set_thumbnail(url=target.display_avatar.url)
         embed.set_footer(text=f"User ID: {target.id}")
         return embed
+    
+    # Helper function to log moderation actions to database
+    async def log_mod_action(self, guild_id, user_id, moderator_id, action_type, reason, **kwargs):
+        """
+        Log a moderation action to the database
+        
+        Parameters:
+        - guild_id: ID of the guild where action took place
+        - user_id: ID of the user who received the action
+        - moderator_id: ID of the moderator who performed the action
+        - action_type: Type of action (warn, mute, unmute, kick, ban)
+        - reason: Reason for the action
+        - **kwargs: Additional data for specific action types
+        """
+        log_entry = {
+            "guild_id": guild_id,
+            "user_id": user_id,
+            "moderator_id": moderator_id,
+            "action_type": action_type,
+            "reason": reason,
+            "timestamp": datetime.datetime.now()
+        }
+        
+        # Add any additional data from kwargs
+        log_entry.update(kwargs)
+        
+        # Insert log to database
+        await self.modlogs_collection.insert_one(log_entry)
 
     @app_commands.command(name="mute", description="Timeout a user for a specified duration")
     @app_commands.describe(
@@ -61,6 +170,17 @@ class Moderation(commands.Cog):
             await user.timeout(timeout_duration, reason=reason)
             embed = self.create_mod_embed("Mute", user, interaction.user, reason)
             embed.add_field(name="Duration", value=f"{duration} minutes", inline=False)
+            
+            # Log the action to database
+            await self.log_mod_action(
+                guild_id=interaction.guild.id,
+                user_id=user.id,
+                moderator_id=interaction.user.id,
+                action_type="mute",
+                reason=reason,
+                duration=duration
+            )
+            
             await interaction.response.send_message(embed=embed)
         except discord.Forbidden:
             await interaction.response.send_message("I don't have permission to timeout this user!", ephemeral=True)
@@ -109,6 +229,15 @@ class Moderation(commands.Cog):
             embed.set_thumbnail(url=user.display_avatar.url)
             embed.set_footer(text=f"User ID: {user.id}")
             
+            # Log the action to database
+            await self.log_mod_action(
+                guild_id=interaction.guild.id,
+                user_id=user.id,
+                moderator_id=interaction.user.id,
+                action_type="unmute",
+                reason=reason
+            )
+            
             await interaction.response.send_message(embed=embed)
         except discord.Forbidden:
             await interaction.response.send_message("I don't have permission to unmute this user!", ephemeral=True)
@@ -140,6 +269,16 @@ class Moderation(commands.Cog):
         try:
             await user.kick(reason=reason)
             embed = self.create_mod_embed("Kick", user, interaction.user, reason)
+            
+            # Log the action to database
+            await self.log_mod_action(
+                guild_id=interaction.guild.id,
+                user_id=user.id,
+                moderator_id=interaction.user.id,
+                action_type="kick",
+                reason=reason
+            )
+            
             await interaction.response.send_message(embed=embed)
         except discord.Forbidden:
             await interaction.response.send_message("I don't have permission to kick this user!", ephemeral=True)
@@ -178,6 +317,17 @@ class Moderation(commands.Cog):
             embed = self.create_mod_embed("Ban", user, interaction.user, reason)
             if delete_days > 0:
                 embed.add_field(name="Message Deletion", value=f"Deleted messages from the past {delete_days} days", inline=False)
+            
+            # Log the action to database
+            await self.log_mod_action(
+                guild_id=interaction.guild.id,
+                user_id=user.id,
+                moderator_id=interaction.user.id,
+                action_type="ban",
+                reason=reason,
+                delete_days=delete_days
+            )
+            
             await interaction.response.send_message(embed=embed)
         except discord.Forbidden:
             await interaction.response.send_message("I don't have permission to ban this user!", ephemeral=True)
@@ -202,31 +352,28 @@ class Moderation(commands.Cog):
         if user.top_role >= interaction.user.top_role and interaction.user.id != interaction.guild.owner_id:
             return await interaction.response.send_message("You cannot warn someone with a higher or equal role!", ephemeral=True)
         
-        # Add warning to MongoDB
-        guild_id = interaction.guild.id
-        user_id = user.id
-        warning_time = datetime.datetime.now()
-        
-        warning = {
-            "guild_id": guild_id,
-            "user_id": user_id,
-            "reason": reason,
-            "moderator_id": interaction.user.id,
-            "timestamp": warning_time
-        }
-        
-        # Insert warning to database
-        await self.warnings_collection.insert_one(warning)
+        # Use the log_mod_action helper function 
+        await self.log_mod_action(
+            guild_id=interaction.guild.id,
+            user_id=user.id,
+            moderator_id=interaction.user.id,
+            action_type="warn",
+            reason=reason
+        )
         
         # Get warning count
-        warning_count = await self.warnings_collection.count_documents({"guild_id": guild_id, "user_id": user_id})
+        warning_count = await self.modlogs_collection.count_documents({
+            "guild_id": interaction.guild.id, 
+            "user_id": user.id,
+            "action_type": "warn"
+        })
         
         # Create warning embed for channel
         embed = discord.Embed(
             title="User Warned",
             description=f"{user.mention} has been warned.",
             color=discord.Color.from_rgb(255, 255, 0),  # Yellow color
-            timestamp=warning_time
+            timestamp=datetime.datetime.now()
         )
         embed.add_field(name="Reason", value=reason, inline=False)
         embed.add_field(name="Warned by", value=interaction.user.mention, inline=False)
@@ -242,7 +389,7 @@ class Moderation(commands.Cog):
             title=f"Warning from {interaction.guild.name}",
             description=f"You have been warned by {interaction.user.display_name}.",
             color=discord.Color.from_rgb(255, 255, 0),  # Yellow color
-            timestamp=warning_time
+            timestamp=datetime.datetime.now()
         )
         dm_embed.add_field(name="Reason", value=reason, inline=False)
         dm_embed.add_field(name="Warning Count", value=str(warning_count), inline=False)
@@ -256,54 +403,137 @@ class Moderation(commands.Cog):
             # If DM fails, add note to channel embed
             await interaction.followup.send(f"Note: Could not DM {user.mention} about this warning.", ephemeral=True)
     
-    @app_commands.command(name="warnings", description="Check warnings for a user")
+    @app_commands.command(name="modlogs", description="Check moderation logs for a user")
     @app_commands.describe(
-        user="The user to check warnings for"
+        user="The user to check logs for"
     )
     @app_commands.default_permissions(kick_members=True)
-    async def warnings(self, 
-                      interaction: discord.Interaction, 
-                      user: discord.Member):
+    async def modlogs(self, 
+                     interaction: discord.Interaction, 
+                     user: discord.Member):
         # Check if user has permission
         if not self.check_permissions(interaction):
-            return await interaction.response.send_message("You don't have permission to view warnings!", ephemeral=True)
+            return await interaction.response.send_message("You don't have permission to view moderation logs!", ephemeral=True)
         
         guild_id = interaction.guild.id
         user_id = user.id
         
-        # Get warnings from MongoDB
-        cursor = self.warnings_collection.find({"guild_id": guild_id, "user_id": user_id}).sort("timestamp", 1)
-        warnings_list = await cursor.to_list(length=None)
+        # Get logs from MongoDB
+        cursor = self.modlogs_collection.find({"guild_id": guild_id, "user_id": user_id}).sort("timestamp", -1)  # Newest first
+        logs_list = await cursor.to_list(length=None)
         
-        if not warnings_list:
-            return await interaction.response.send_message(f"{user.mention} has no warnings.", ephemeral=False)
+        if not logs_list:
+            return await interaction.response.send_message(f"{user.mention} has no moderation logs.", ephemeral=False)
         
-        warning_count = len(warnings_list)
+        log_count = len(logs_list)
         
-        # Create embed
+        # Create initial embed
         embed = discord.Embed(
-            title=f"Warnings for {user.display_name}",
-            description=f"{user.mention} has {warning_count} warning(s).",
-            color=discord.Color.from_rgb(255, 255, 0),  # Yellow color
+            title=f"Moderation Logs for {user.display_name}",
+            description=f"{user.mention} has {log_count} logs. Showing most recent logs.",
+            color=discord.Color.from_rgb(255, 165, 0),  # Orange color
             timestamp=datetime.datetime.now()
         )
         
-        # Add each warning to embed
-        for i, warning in enumerate(warnings_list, 1):
-            moderator = interaction.guild.get_member(warning["moderator_id"]) or "Unknown Moderator"
+        # Display first page of logs (limited to 5 per page)
+        logs_per_page = 5
+        for i, log in enumerate(logs_list[:logs_per_page], 1):
+            action_type = log.get("action_type", "unknown")
+            reason = log.get("reason", "No reason provided")
+            moderator_id = log.get("moderator_id")
+            timestamp = log.get("timestamp", datetime.datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
+            
+            # Get moderator mention if possible
+            moderator = interaction.guild.get_member(moderator_id) or "Unknown Moderator"
             moderator_mention = moderator.mention if isinstance(moderator, discord.Member) else moderator
-            timestamp = warning["timestamp"].strftime("%Y-%m-%d %H:%M:%S") if isinstance(warning["timestamp"], datetime.datetime) else "Unknown time"
+            
+            # Format field content based on action type
+            value = f"**Reason:** {reason}\n**By:** {moderator_mention}\n**When:** {timestamp}"
+            
+            # Add action-specific details if they exist
+            if "duration" in log and log["duration"]:
+                value += f"\n**Duration:** {log['duration']} minutes"
+            if "delete_days" in log and log["delete_days"]:
+                value += f"\n**Messages Deleted:** {log['delete_days']} days"
             
             embed.add_field(
-                name=f"Warning {i}",
-                value=f"**Reason:** {warning['reason']}\n**By:** {moderator_mention}\n**When:** {timestamp}",
+                name=f"{action_type.title()} | {timestamp}",
+                value=value,
                 inline=False
             )
         
         embed.set_thumbnail(url=user.display_avatar.url)
-        embed.set_footer(text=f"User ID: {user.id}")
+        embed.set_footer(text=f"User ID: {user.id} | Page 1/{(log_count-1)//logs_per_page + 1}")
         
-        await interaction.response.send_message(embed=embed)
+        # Create pagination view if there are more than 5 logs
+        if log_count > logs_per_page:
+            view = PaginationView(logs_list, logs_per_page=logs_per_page)
+            await interaction.response.send_message(embed=embed, view=view)
+        else:
+            await interaction.response.send_message(embed=embed)
+    
+    @app_commands.command(name="unban", description="Unban a user from the server")
+    @app_commands.describe(
+        user_id="The ID of the user to unban",
+        reason="Reason for the unban"
+    )
+    @app_commands.default_permissions(ban_members=True)
+    async def unban(self, 
+                   interaction: discord.Interaction, 
+                   user_id: str, 
+                   reason: str = None):
+        # Check if user has permission
+        if not interaction.user.guild_permissions.ban_members:
+            return await interaction.response.send_message("You don't have permission to unban members!", ephemeral=True)
+        
+        # Check if the bot can ban/unban
+        if not interaction.guild.me.guild_permissions.ban_members:
+            return await interaction.response.send_message("I don't have permission to unban members!", ephemeral=True)
+        
+        try:
+            # Convert user_id string to int
+            try:
+                user_id_int = int(user_id)
+            except ValueError:
+                return await interaction.response.send_message("Invalid user ID. Please provide a valid numeric ID.", ephemeral=True)
+            
+            # Get the ban entry
+            try:
+                ban_entry = await interaction.guild.fetch_ban(discord.Object(id=user_id_int))
+                banned_user = ban_entry.user
+            except discord.NotFound:
+                return await interaction.response.send_message(f"User with ID {user_id} is not banned.", ephemeral=True)
+            
+            # Unban the user
+            await interaction.guild.unban(banned_user, reason=reason)
+            
+            # Create unban embed
+            embed = discord.Embed(
+                title="User Unbanned",
+                description=f"**{banned_user}** has been unbanned.",
+                color=discord.Color.from_rgb(0, 255, 0),  # Green color
+                timestamp=datetime.datetime.now()
+            )
+            embed.add_field(name="Reason", value=reason or "No reason provided", inline=False)
+            embed.add_field(name="Unbanned by", value=interaction.user.mention, inline=False)
+            if banned_user.avatar:
+                embed.set_thumbnail(url=banned_user.avatar.url)
+            embed.set_footer(text=f"User ID: {banned_user.id}")
+            
+            # Log the action to database
+            await self.log_mod_action(
+                guild_id=interaction.guild.id,
+                user_id=banned_user.id,
+                moderator_id=interaction.user.id,
+                action_type="unban",
+                reason=reason
+            )
+            
+            await interaction.response.send_message(embed=embed)
+        except discord.Forbidden:
+            await interaction.response.send_message("I don't have permission to unban this user!", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"An error occurred: {str(e)}", ephemeral=True)
     
     @app_commands.command(name="clearwarnings", description="Clear warnings for a user")
     @app_commands.describe(
@@ -321,13 +551,30 @@ class Moderation(commands.Cog):
         user_id = user.id
         
         # Get warning count first
-        warning_count = await self.warnings_collection.count_documents({"guild_id": guild_id, "user_id": user_id})
+        warning_count = await self.modlogs_collection.count_documents({
+            "guild_id": guild_id, 
+            "user_id": user_id,
+            "action_type": "warn"
+        })
         
         if warning_count == 0:
             return await interaction.response.send_message(f"{user.mention} has no warnings to clear.", ephemeral=False)
         
         # Delete warnings from MongoDB
-        result = await self.warnings_collection.delete_many({"guild_id": guild_id, "user_id": user_id})
+        result = await self.modlogs_collection.delete_many({
+            "guild_id": guild_id, 
+            "user_id": user_id,
+            "action_type": "warn"
+        })
+        
+        # Log this action
+        await self.log_mod_action(
+            guild_id=guild_id,
+            user_id=user_id,
+            moderator_id=interaction.user.id,
+            action_type="clearwarnings",
+            reason=f"Cleared {warning_count} warnings"
+        )
         
         # Create embed
         embed = discord.Embed(
