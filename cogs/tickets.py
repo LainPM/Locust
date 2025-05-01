@@ -422,24 +422,63 @@ class ClosedTicketView(ui.View):
         guild_id = interaction.guild.id
         channel_id = interaction.channel.id
         
-        # Get ticket data
-        ticket_data = await self.bot.cogs["TicketSystem"].tickets_col.find_one(
-            {"guild_id": guild_id, "channel_id": channel_id}
-        )
+        # Defer interaction to prevent timeout during transcript generation
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except Exception as e:
+            print(f"Error deferring interaction: {e}")
         
+        # Get ticket data
+        ticket_data = None
+        try:
+            ticket_data = await self.bot.cogs["TicketSystem"].tickets_col.find_one(
+                {"guild_id": guild_id, "channel_id": channel_id}
+            )
+        except Exception as e:
+            print(f"Error retrieving ticket data: {e}")
+            try:
+                await interaction.followup.send("Database error. Please contact an administrator.", ephemeral=True)
+            except:
+                await interaction.channel.send("Database error. Please contact an administrator.")
+            return
+            
         if not ticket_data:
-            await interaction.response.send_message("Ticket data not found!", ephemeral=True)
+            try:
+                await interaction.followup.send("Ticket not found in database. Please contact an administrator.", ephemeral=True)
+            except:
+                await interaction.channel.send("Ticket not found in database. Please contact an administrator.")
             return
         
         # Get config for transcript channel
-        config = await self.bot.cogs["TicketSystem"].config_col.find_one({"guild_id": guild_id})
+        config = None
+        try:
+            config = await self.bot.cogs["TicketSystem"].config_col.find_one({"guild_id": guild_id})
+        except Exception as e:
+            print(f"Error retrieving config: {e}")
+            try:
+                await interaction.followup.send("Config not found. Please contact an administrator.", ephemeral=True)
+            except:
+                await interaction.channel.send("Config not found. Please contact an administrator.")
+            return
+            
         if not config:
-            await interaction.response.send_message("Ticket system config not found!", ephemeral=True)
+            try:
+                await interaction.followup.send("Ticket system config not found. Please contact an administrator.", ephemeral=True)
+            except:
+                await interaction.channel.send("Ticket system config not found. Please contact an administrator.")
             return
         
-        # Get message history
-        history = [msg async for msg in interaction.channel.history(limit=None, oldest_first=True)]
-        
+        # Get message history with error handling
+        try:
+            history = [msg async for msg in interaction.channel.history(limit=None, oldest_first=True)]
+        except Exception as e:
+            print(f"Error retrieving message history: {e}")
+            try:
+                await interaction.followup.send("Could not retrieve message history. Please try again.", ephemeral=True)
+            except:
+                await interaction.channel.send("Could not retrieve message history. Please try again.")
+            return
+            
         # Count messages per user
         user_messages = {}
         for msg in history:
@@ -450,13 +489,17 @@ class ClosedTicketView(ui.View):
         
         # Update user involvement in ticket data
         users_involved = list(user_messages.keys())
-        await self.bot.cogs["TicketSystem"].tickets_col.update_one(
-            {"guild_id": guild_id, "channel_id": channel_id},
-            {"$set": {
-                "users_involved": users_involved,
-                "message_count": len(history)
-            }}
-        )
+        try:
+            await self.bot.cogs["TicketSystem"].tickets_col.update_one(
+                {"guild_id": guild_id, "channel_id": channel_id},
+                {"$set": {
+                    "users_involved": users_involved,
+                    "message_count": len(history)
+                }}
+            )
+        except Exception as e:
+            print(f"Error updating user involvement: {e}")
+            # Not critical, continue anyway
         
         # Build server info section
         server_info = (
@@ -493,48 +536,114 @@ class ClosedTicketView(ui.View):
         full_transcript = f"<html><body><pre>{server_info}\n\n{user_info}\n\n{transcript}</pre></body></html>"
         
         # Save transcript to MongoDB
-        timestamp = datetime.utcnow()
-        transcript_id = await self.bot.cogs["TicketSystem"].transcripts_col.insert_one({
-            "case_number": ticket_data.get("case_number"),
-            "guild_id": guild_id,
-            "channel_id": channel_id,
-            "transcript_html": full_transcript,
-            "timestamp": timestamp,
-            "generated_by": interaction.user.id
-        })
+        transcript_id = None
+        try:
+            timestamp = datetime.utcnow()
+            result = await self.bot.cogs["TicketSystem"].transcripts_col.insert_one({
+                "case_number": ticket_data.get("case_number"),
+                "guild_id": guild_id,
+                "channel_id": channel_id,
+                "transcript_html": full_transcript,
+                "timestamp": timestamp,
+                "generated_by": interaction.user.id
+            })
+            transcript_id = result.inserted_id
+        except Exception as e:
+            print(f"Error saving transcript to database: {e}")
+            try:
+                await interaction.followup.send("Error saving transcript to database. The transcript may not be properly recorded.", ephemeral=True)
+            except:
+                await interaction.channel.send("Error saving transcript to database. The transcript may not be properly recorded.")
+            # Continue to try to send the file anyway
         
         # Send to transcript channel
-        transcript_channel = interaction.guild.get_channel(config["transcript_channel_id"])
+        transcript_channel = None
+        try:
+            transcript_channel_id = config.get("transcript_channel_id")
+            transcript_channel = interaction.guild.get_channel(transcript_channel_id)
+        except Exception as e:
+            print(f"Error getting transcript channel: {e}")
+        
         if not transcript_channel:
-            await interaction.response.send_message("Transcript channel not found!", ephemeral=True)
+            try:
+                await interaction.followup.send("Transcript channel not found or accessible. Please contact an administrator.", ephemeral=True)
+            except:
+                await interaction.channel.send("Transcript channel not found or accessible. Please contact an administrator.")
             return
         
-        data = io.BytesIO(full_transcript.encode('utf-8'))
-        filename = f"ticket-{ticket_data.get('case_number')}-{interaction.channel.name}.html"
+        # Create the transcript file
+        try:
+            data = io.BytesIO(full_transcript.encode('utf-8'))
+            filename = f"ticket-{ticket_data.get('case_number')}-{interaction.channel.name}.html"
+        except Exception as e:
+            print(f"Error creating transcript file: {e}")
+            try:
+                await interaction.followup.send("Error creating transcript file. Please try again.", ephemeral=True)
+            except:
+                await interaction.channel.send("Error creating transcript file. Please try again.")
+            return
         
         # Create embed with transcript info
-        embed = discord.Embed(
-            title=f"Ticket Transcript: Case #{ticket_data.get('case_number')}",
-            description=f"Transcript for ticket {interaction.channel.mention}",
-            color=discord.Color.blue(),
-            timestamp=timestamp
-        )
-        embed.add_field(name="Ticket Type", value=ticket_data.get("ticket_type"), inline=True)
-        embed.add_field(name="Created By", value=f"<@{ticket_data.get('user_id')}>", inline=True)
-        embed.add_field(name="Messages", value=str(len(history)), inline=True)
-        embed.add_field(name="Close Reason", value=ticket_data.get("close_reason", "Not specified"), inline=False)
+        embed = None
+        try:
+            embed = discord.Embed(
+                title=f"Ticket Transcript: Case #{ticket_data.get('case_number')}",
+                description=f"Transcript for ticket {interaction.channel.mention}",
+                color=discord.Color.blue(),
+                timestamp=timestamp
+            )
+            embed.add_field(name="Ticket Type", value=ticket_data.get("ticket_type"), inline=True)
+            embed.add_field(name="Created By", value=f"<@{ticket_data.get('user_id')}>", inline=True)
+            embed.add_field(name="Messages", value=str(len(history)), inline=True)
+            
+            # Add closure information if available
+            if ticket_data.get('status') == 'closed':
+                close_reason = ticket_data.get("close_reason", "Not specified")
+                embed.add_field(name="Close Reason", value=close_reason, inline=False)
+                
+                # Add who closed it and when
+                closed_by = ticket_data.get("closed_by")
+                if closed_by:
+                    embed.add_field(name="Closed By", value=f"<@{closed_by}>", inline=True)
+                    
+                # Add reopen info if applicable
+                if ticket_data.get("reopened_by"):
+                    embed.add_field(name="Last Reopened By", value=f"<@{ticket_data.get('reopened_by')}>", inline=True)
+        except Exception as e:
+            print(f"Error creating transcript embed: {e}")
+            # Create a simple embed if complex one fails
+            try:
+                embed = discord.Embed(
+                    title=f"Ticket Transcript: Case #{ticket_data.get('case_number')}",
+                    description="Error creating full transcript details",
+                    color=discord.Color.red()
+                )
+            except:
+                # If we can't even create a simple embed, we'll proceed without one
+                pass
         
-        # Send the transcript file with embed and add a view transcript button
-        view = discord.ui.View()
-        
-        # Create and send file to get URL
-        sent_message = await transcript_channel.send(
-            embed=embed,
-            file=discord.File(data, filename=filename)
-        )
-        
-        if sent_message.attachments:
-            transcript_url = sent_message.attachments[0].url
+        # Send the transcript file with embed - prioritize reliable delivery
+        transcript_url = None
+        sent_message = None
+        try:
+            # Create file and send
+            discord_file = discord.File(data, filename=filename)
+            
+            if embed:
+                sent_message = await transcript_channel.send(embed=embed, file=discord_file)
+            else:
+                sent_message = await transcript_channel.send(file=discord_file)
+                
+            # Get the URL from the attachment
+            if sent_message and sent_message.attachments:
+                transcript_url = sent_message.attachments[0].url
+        except Exception as e:
+            print(f"Error sending transcript to channel: {e}")
+            try:
+                await interaction.followup.send(f"Error sending transcript to channel: {e}", ephemeral=True)
+            except:
+                await interaction.channel.send(f"Error sending transcript to channel: {e}")
+            return
             
             # Add View Transcript button to the message
             view.add_item(discord.ui.Button(
