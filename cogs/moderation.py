@@ -551,7 +551,9 @@ class Moderation(commands.Cog):
         
         # Display first page of logs (limited to 5 per page)
         logs_per_page = 5
-        for i, log in enumerate(logs_list[:logs_per_page], 1):
+        current_page_logs = logs_list[:logs_per_page]
+        
+        for log in current_page_logs:
             case_id = log.get("case_id", "Unknown")
             action_type = log.get("action_type", "unknown")
             reason = log.get("reason", "No reason provided")
@@ -559,8 +561,8 @@ class Moderation(commands.Cog):
             timestamp = log.get("timestamp", datetime.datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
             
             # Get moderator mention if possible
-            moderator = interaction.guild.get_member(moderator_id) or "Unknown Moderator"
-            moderator_mention = moderator.mention if isinstance(moderator, discord.Member) else moderator
+            moderator = interaction.guild.get_member(moderator_id) if moderator_id else None
+            moderator_mention = moderator.mention if moderator else f"<@{moderator_id}>" if moderator_id else "Unknown Moderator"
             
             # Format field content based on action type
             value = f"**Reason:** {reason}\n**By:** {moderator_mention}\n**When:** {timestamp}"
@@ -578,7 +580,10 @@ class Moderation(commands.Cog):
             )
         
         embed.set_thumbnail(url=user.display_avatar.url)
-        embed.set_footer(text=f"User ID: {user.id} | Page 1/{(log_count-1)//logs_per_page + 1}")
+        
+        # Calculate max pages
+        max_pages = max(1, ((log_count - 1) // logs_per_page) + 1)
+        embed.set_footer(text=f"User ID: {user.id} | Page 1/{max_pages}")
         
         # Create pagination view if there are more than 5 logs
         if log_count > logs_per_page:
