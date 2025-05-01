@@ -152,48 +152,32 @@ class LoveCalc(commands.Cog):
         avatar1[:, :, 3] = mask1
         avatar2[:, :, 3] = mask2
         
-        # Get heart color based on percentage
-        if percentage < 20:
+        # Load the heart image from file
+        try:
+            heart_image_path = "assets/heart1.png"
+            heart_img_arr = np.fromfile(heart_image_path, np.uint8)
+            heart_img = cv2.imdecode(heart_img_arr, cv2.IMREAD_UNCHANGED)
+            
+            # Resize heart image to appropriate size
+            heart_size = 120
+            heart_img = cv2.resize(heart_img, (heart_size, heart_size))
+            
+            # Ensure heart image has alpha channel
+            if heart_img.shape[2] == 3:  # If only BGR channels
+                heart_img = cv2.cvtColor(heart_img, cv2.COLOR_BGR2BGRA)
+        except Exception as e:
+            print(f"Error loading heart image: {e}")
+            # Create a basic heart as fallback
+            heart_size = 120
+            heart_img = np.zeros((heart_size, heart_size, 4), dtype=np.uint8)
             heart_color = (0, 0, 255, 255)  # Red (BGR format)
-        elif percentage < 40:
-            heart_color = (0, 127, 255, 255)  # Orange
-        elif percentage < 60:
-            heart_color = (0, 255, 255, 255)  # Yellow
-        elif percentage < 80:
-            heart_color = (0, 255, 127, 255)  # Light green
-        elif percentage < 100:
-            heart_color = (0, 255, 0, 255)  # Green
-        else:
-            heart_color = (255, 0, 255, 255)  # Purple
-
-        # Create heart shape
-        heart_size = 120
-        heart_img = np.zeros((heart_size, heart_size, 4), dtype=np.uint8)
+            cv2.putText(heart_img, "♥", (heart_size//4, heart_size*3//4), cv2.FONT_HERSHEY_SIMPLEX, 2, heart_color, 3)
         
-        # Draw heart shape using two circles and a triangle
-        center1 = (heart_size // 4, heart_size // 4)
-        center2 = (heart_size * 3 // 4, heart_size // 4)
-        radius = heart_size // 4
-        
-        cv2.circle(heart_img, center1, radius, heart_color, -1)
-        cv2.circle(heart_img, center2, radius, heart_color, -1)
-        
-        triangle_pts = np.array([
-            [0, heart_size // 3],
-            [heart_size // 2, heart_size - 10],
-            [heart_size, heart_size // 3]
-        ], np.int32)
-        
-        cv2.fillPoly(heart_img, [triangle_pts], heart_color)
-        
-        # Add percentage text to heart
+        # Add percentage text to the image (below the heart)
         text = f"{percentage}%"
         font = cv2.FONT_HERSHEY_SIMPLEX
         font_scale = 0.7
         text_size = cv2.getTextSize(text, font, font_scale, 2)[0]
-        text_pos = ((heart_size - text_size[0]) // 2, (heart_size + text_size[1]) // 2)
-        
-        cv2.putText(heart_img, text, text_pos, font, font_scale, (255, 255, 255, 255), 2)
         
         # Place avatars and heart on the image
         try:
@@ -218,6 +202,14 @@ class LoveCalc(commands.Cog):
                     if heart_img[y, x, 3] > 0:  # Not fully transparent
                         if (0 <= heart_pos_y + y < height and 0 <= heart_pos_x + x < width):
                             image[heart_pos_y + y, heart_pos_x + x] = heart_img[y, x]
+            
+            # Place percentage text below the heart
+            text_pos_x = (width - text_size[0]) // 2
+            text_pos_y = heart_pos_y + heart_size + text_size[1] + 5
+            
+            # Only add text if it fits within the image height
+            if text_pos_y < height - 5:
+                cv2.putText(image, text, (text_pos_x, text_pos_y), font, font_scale, (255, 255, 255, 255), 2)
         
         except Exception as e:
             print(f"Error compositing image: {e}")
