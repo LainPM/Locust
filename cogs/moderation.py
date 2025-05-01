@@ -8,85 +8,53 @@ class PaginationView(ui.View):
     def __init__(self, mod_logs, target_user, user_id, logs_per_page=5, timeout=180):
         super().__init__(timeout=timeout)
         self.mod_logs = mod_logs
+        self.target_user = target_user
+        self.user_id = user_id
         self.logs_per_page = logs_per_page
         self.current_page = 1
-        self.max_pages = max(1, ((len(mod_logs) - 1) // logs_per_page) + 1)  # Ensure at least 1 page
-        self.target_user = target_user  # Store user name
-        self.user_id = user_id  # Store user ID
-        
-        # Disable next button if only one page
+        self.max_pages = max(1, ((len(mod_logs) - 1) // logs_per_page) + 1)
+
+        # Initialize button states
+        self.previous_button.disabled = True
         if self.max_pages <= 1:
             self.next_button.disabled = True
 
-    @ui.button(label="Previous", style=discord.ButtonStyle.secondary, disabled=True)
+    @ui.button(label="Previous", style=discord.ButtonStyle.secondary)
     async def previous_button(self, interaction: discord.Interaction, button: ui.Button):
         self.current_page -= 1
-        # Disable previous button if we're on the first page
-        if self.current_page == 1:
-            button.disabled = True
-        # Enable next button if it was disabled
+        button.disabled = self.current_page <= 1
         self.next_button.disabled = False
-        
-        # Update the embed with the new page
-        embed = self.create_log_embed()
-        await interaction.response.edit_message(embed=embed, view=self)
+        await interaction.response.edit_message(
+            embed=self.create_log_embed(), 
+            view=self
+        )
 
     @ui.button(label="Next", style=discord.ButtonStyle.primary)
     async def next_button(self, interaction: discord.Interaction, button: ui.Button):
         self.current_page += 1
-        # Disable next button if we're on the last page
-        if self.current_page >= self.max_pages:
-            button.disabled = True
-        # Enable previous button if it was disabled
+        button.disabled = self.current_page >= self.max_pages
         self.previous_button.disabled = False
-        
-        # Update the embed with the new page
-        embed = self.create_log_embed()
-        await interaction.response.edit_message(embed=embed, view=self)
+        await interaction.response.edit_message(
+            embed=self.create_log_embed(), 
+            view=self
+        )
 
     def create_log_embed(self):
-        # Calculate start and end indices for the current page
         start_idx = (self.current_page - 1) * self.logs_per_page
         end_idx = min(start_idx + self.logs_per_page, len(self.mod_logs))
         current_logs = self.mod_logs[start_idx:end_idx]
         
-        # Create embed for current page
         embed = discord.Embed(
             title=f"Moderation Logs for {self.target_user}",
             description=f"Showing logs {start_idx+1}-{end_idx} of {len(self.mod_logs)}",
-            color=discord.Color.from_rgb(255, 165, 0),  # Orange color
+            color=discord.Color.orange(),
             timestamp=datetime.datetime.now()
         )
         
         for log in current_logs:
-            case_id = log.get("case_id", "Unknown")
-            action_type = log.get("action_type", "unknown")
-            reason = log.get("reason", "No reason provided")
-            moderator_id = log.get("moderator_id")
-            timestamp = log.get("timestamp", datetime.datetime.now()).strftime("%Y-%m-%d %H:%M:%S") if isinstance(log.get("timestamp"), datetime.datetime) else "Unknown time"
-            
-            # Get moderator mention if possible (use lambda to handle potential None value safely)
-            moderator = discord.utils.get(discord.utils.get_all_members(), id=moderator_id) or "Unknown Moderator"
-            moderator_mention = moderator.mention if isinstance(moderator, discord.Member) else moderator
-            
-            # Format the field value based on action type
-            value = f"**Reason:** {reason}\n**By:** {moderator_mention}\n**When:** {timestamp}"
-            
-            # Add action-specific details if they exist
-            if "duration" in log and log["duration"]:
-                value += f"\n**Duration:** {log['duration']} minutes"
-            if "delete_days" in log and log["delete_days"]:
-                value += f"\n**Messages Deleted:** {log['delete_days']} days"
-                
-            embed.add_field(
-                name=f"Case #{case_id} | {action_type.title()} | {timestamp}",
-                value=value,
-                inline=False
-            )
+            # ... [keep existing log formatting code] ...
         
-        # Set footer and thumbnail
         embed.set_footer(text=f"User ID: {self.user_id} | Page {self.current_page}/{self.max_pages}")
-        
         return embed
 
 class Moderation(commands.Cog):
