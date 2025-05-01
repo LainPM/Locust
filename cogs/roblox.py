@@ -195,9 +195,22 @@ class Roblox(commands.Cog):
             print(f"Error in get_user_groups: {str(e)}")
             return []
     
+    async def get_premium_info(self, user_id):
+        """Get user's premium membership info"""
+        try:
+            async with self.session.get(f"https://premiumfeatures.roblox.com/v1/users/{user_id}/validate-membership") as response:
+                if response.status == 200:
+                    data = await response.json()
+                    return data.get("isPremium", False)
+                return False
+        except Exception as e:
+            print(f"Error in get_premium_info: {str(e)}")
+            return False
+    
     async def get_profile_stats(self, user_id):
         """Get profile visits and other stats by scraping the profile page"""
         try:
+            import re
             # Try to get the stats from the profile page
             profile_url = f"https://www.roblox.com/users/{user_id}/profile"
             headers = {
