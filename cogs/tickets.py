@@ -242,6 +242,18 @@ class CloseModal(ui.Modal, title="Close Ticket"):
         channel = interaction.channel
         guild_id = interaction.guild.id
         
+        # First check if ticket exists and get its current status
+        ticket_data = await self.bot.cogs["TicketSystem"].tickets_col.find_one(
+            {"guild_id": guild_id, "channel_id": channel.id}
+        )
+        
+        if not ticket_data:
+            await interaction.response.send_message(
+                "Error: Ticket data not found. Please contact an administrator.",
+                ephemeral=True
+            )
+            return
+            
         # Update ticket status in MongoDB
         timestamp = datetime.utcnow()
         await self.bot.cogs["TicketSystem"].tickets_col.update_one(
@@ -429,25 +441,45 @@ class ClosedTicketView(ui.View):
         embed.add_field(name="Messages", value=str(len(history)), inline=True)
         embed.add_field(name="Close Reason", value=ticket_data.get("close_reason", "Not specified"), inline=False)
         
-        # Send the transcript file with embed
+        # Send the transcript file with embed and add a view transcript button
+        view = discord.ui.View()
+        
+        # Create and send file to get URL
         sent_message = await transcript_channel.send(
             embed=embed,
             file=discord.File(data, filename=filename)
         )
         
-        transcript_url = sent_message.attachments[0].url
-        
-        # Update transcript URL in MongoDB
-        await self.bot.cogs["TicketSystem"].transcripts_col.update_one(
-            {"_id": transcript_id.inserted_id},
-            {"$set": {"url": transcript_url}}
-        )
-        
-        await interaction.response.send_message(
-            f"Transcript generated and sent to {transcript_channel.mention}\n"
-            f"[View Transcript]({transcript_url})",
-            ephemeral=True
-        )
+        if sent_message.attachments:
+            transcript_url = sent_message.attachments[0].url
+            
+            # Add View Transcript button to the message
+            view.add_item(discord.ui.Button(
+                label="View Transcript",
+                style=discord.ButtonStyle.link,
+                url=transcript_url
+            ))
+            
+            # Edit the message to add the view
+            await sent_message.edit(view=view)
+            
+            # Update transcript URL in MongoDB
+            await self.bot.cogs["TicketSystem"].transcripts_col.update_one(
+                {"_id": transcript_id.inserted_id},
+                {"$set": {"url": transcript_url}}
+            )
+            
+            # Send confirmation with link to user
+            await interaction.response.send_message(
+                f"Transcript generated and sent to {transcript_channel.mention}\n"
+                f"[View Transcript]({transcript_url})",
+                ephemeral=True
+            )
+        else:
+            await interaction.response.send_message(
+                f"Transcript was generated but there was an issue with the file attachment. Please check {transcript_channel.mention}.",
+                ephemeral=True
+            )
 
     async def _delete_ticket(self, interaction: discord.Interaction):
         """Delete the ticket channel"""
@@ -545,12 +577,16 @@ class ClosedTicketView(ui.View):
         # Create new open ticket view
         view = OpenTicketView(self.bot)
         
-        # Send message about ticket being reopened
-        await interaction.response.send_message(
+        # Send message about ticket being reopened and add the view to persistent views
+        reopen_message = await interaction.response.send_message(
             embed=embed,
             view=view,
-            ephemeral=False
+            ephemeral=False,
+            return_message=True
         )
+        
+        # Add the view to bot's persistent views with the new message ID
+        self.bot.add_view(view, message_id=reopen_message.id)
 
 class ConfirmView(ui.View):
     def __init__(self):
