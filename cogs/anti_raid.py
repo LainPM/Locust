@@ -126,7 +126,7 @@ class AntiRaidCog(commands.Cog):
                 print(f"AntiRaid Cog: Error in cleanup task: {e}")
                 await asyncio.sleep(60)
     
-    @app_commands.command(name="setup-antiraid")
+    @app_commands.command(name="setup_antiraid", description="Set up the anti-raid protection system for your server")
     @app_commands.describe(
         sensitivity="Raid detection sensitivity (0=Off, 1=Low, 2=Medium, 3=High)",
         mod_role="Moderator role to ping (optional)",
