@@ -16,22 +16,30 @@ class FilterCog(commands.Cog):
     """Cog for managing content filtering with blacklist and whitelist functionality"""
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        # Initialize database collections
-        self.ensure_collections()
         # Caches for blacklist/whitelist
         self.blacklist_cache = {}
         self.whitelist_cache = {}
 
-    def ensure_collections(self):
-        if not hasattr(self.bot, 'db'):
+    async def cog_load(self):
+        # Ensure DB collections exist
+        if hasattr(self.bot, 'db'):
+            # Motor list_collection_names is async
+            names = await self.bot.db.list_collection_names()
+            if "blacklist" not in names:
+                await self.bot.db.create_collection("blacklist")
+            if "whitelist" not in names:
+                await self.bot.db.create_collection("whitelist")
+            self.blacklist_collection = self.bot.db["blacklist"]
+            self.whitelist_collection = self.bot.db["whitelist"]
+        else:
             print("Warning: Bot database not initialized")
             return
-        if "blacklist" not in self.bot.db.list_collection_names():
-            self.bot.db.create_collection("blacklist")
-        if "whitelist" not in self.bot.db.list_collection_names():
-            self.bot.db.create_collection("whitelist")
-        self.blacklist_collection = self.bot.db["blacklist"]
-        self.whitelist_collection = self.bot.db["whitelist"]
+        # Pre-load caches
+        for guild in self.bot.guilds:
+            await self.load_cache_for_guild(guild.id)
+        # Sync global slash commands
+        await self.bot.tree.sync()
+        print("FilterCog slash commands synced globally.")
 
     async def load_cache_for_guild(self, guild_id: int):
         self.blacklist_cache[guild_id] = {}
@@ -44,6 +52,8 @@ class FilterCog(commands.Cog):
     @commands.Cog.listener()
     async def on_guild_join(self, guild: discord.Guild):
         await self.load_cache_for_guild(guild.id)
+        # Sync commands to new guild
+        await self.bot.tree.sync(guild=guild)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
