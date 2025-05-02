@@ -250,31 +250,113 @@ class OpenTicketView(ui.View):
 
     async def _on_close(self, interaction: discord.Interaction):
         """Handle ticket closing button press"""
-        # Get the channel and guild data
+        # Get channel and guild
         channel = interaction.channel
         guild_id = interaction.guild.id
+        user = interaction.user
         
-        # Check if ticket exists in database
-        ticket_data = await self.bot.cogs["TicketSystem"].tickets_col.find_one(
-            {"guild_id": guild_id, "channel_id": channel.id}
-        )
-        
+        # Check if ticket exists and get its current status
+        ticket_data = None
+        try:
+            ticket_data = await self.bot.cogs["TicketSystem"].tickets_col.find_one(
+                {"guild_id": guild_id, "channel_id": channel.id}
+            )
+        except Exception as e:
+            print(f"Error getting ticket data: {e}")
+            await interaction.response.send_message(
+                "Error retrieving ticket data. Please try again or contact an administrator.",
+                ephemeral=True
+            )
+            return
+            
         if not ticket_data:
             await interaction.response.send_message(
-                "Error: Ticket data not found. Please contact an administrator.",
+                "Ticket not found in database. Please contact an administrator.",
                 ephemeral=True
             )
             return
         
-        # For all tickets, use the modal
-        try:
-            await interaction.response.send_modal(CloseModal(self.bot))
-        except Exception as e:
-            print(f"Error sending modal: {e}")
-            await interaction.response.send_message(
-                "There was an error processing your request. Please try again.",
-                ephemeral=True
+        # Check if this is a reopened ticket - if so, close directly without modal
+        if ticket_data.get("reopened_by") is not None:
+            try:
+                # Acknowledge the interaction
+                await interaction.response.defer(ephemeral=False)
+            except Exception as e:
+                print(f"Error deferring interaction: {e}")
+            
+            # Send immediate feedback
+            await channel.send(f"{user.mention} is closing this reopened ticket...")
+            
+            # Use a default close reason for reopened tickets
+            close_reason = f"Ticket closed after being reopened by <@{ticket_data.get('reopened_by')}>"
+            
+            # Update ticket in MongoDB - IMPORTANT: reset reopened status
+            timestamp = datetime.utcnow()
+            try:
+                await self.bot.cogs["TicketSystem"].tickets_col.update_one(
+                    {"guild_id": guild_id, "channel_id": channel.id},
+                    {"$set": {
+                        "status": "closed",
+                        "updated_at": timestamp,
+                        "closed_by": user.id,
+                        "close_reason": close_reason,
+                        # Reset reopened status
+                        "reopened_by": None,
+                        "reopened_at": None
+                    }}
+                )
+            except Exception as e:
+                print(f"Error updating ticket: {e}")
+                await channel.send(f"Database error: {e}")
+                return
+                
+            # Rename channel
+            try:
+                current_name = channel.name
+                if not current_name.endswith("-closed"):
+                    new_name = f"{current_name}-closed"
+                    await channel.edit(name=new_name)
+            except Exception as e:
+                print(f"Error renaming channel: {e}")
+                # Not critical, continue
+                
+            # Adjust permissions
+            try:
+                creator_id = ticket_data.get("user_id")
+                if creator_id:
+                    creator = interaction.guild.get_member(creator_id)
+                    if creator:
+                        await channel.set_permissions(creator, send_messages=False)
+            except Exception as e:
+                print(f"Error updating permissions: {e}")
+                # Not critical, continue
+                
+            # Create closed embed
+            embed = discord.Embed(
+                title=f"Ticket {ticket_data.get('case_number')} Closed",
+                description=f"This ticket has been closed by {user.mention}",
+                color=discord.Color.red(),
+                timestamp=timestamp
             )
+            embed.add_field(name="Reason", value=close_reason, inline=False)
+            
+            # Create NEW instance of ClosedTicketView
+            view = ClosedTicketView(self.bot)
+            
+            # Send directly to channel
+            try:
+                message = await channel.send(embed=embed, view=view)
+                self.bot.add_view(view, message_id=message.id)
+            except Exception as e:
+                print(f"Error sending close message: {e}")
+                await channel.send("Error sending close message. The ticket has been closed but UI buttons may not work properly.")
+        else:
+            # First-time close - show the modal
+            try:
+                await interaction.response.send_modal(CloseModal(self.bot))
+            except Exception as e:
+                print(f"Error sending modal: {e}")
+                await channel.send(f"Error sending close form: {e}. Please try again or contact an administrator.")
 
 class CloseModal(ui.Modal, title="Close Ticket"):
     def __init__(self, bot):
@@ -675,53 +757,90 @@ class ClosedTicketView(ui.View):
 
     async def _delete_ticket(self, interaction: discord.Interaction):
         """Delete the ticket channel"""
+        # Get channel and guild immediately for reference
+        channel = interaction.channel
         guild_id = interaction.guild.id
-        channel_id = interaction.channel.id
+        user = interaction.user
         
-        # Get ticket data to check permissions
-        ticket_data = await self.bot.cogs["TicketSystem"].tickets_col.find_one(
-            {"guild_id": guild_id, "channel_id": channel_id}
-        )
-        
-        # Check if transcript exists
-        transcript = await self.bot.cogs["TicketSystem"].transcripts_col.find_one(
-            {"guild_id": guild_id, "channel_id": channel_id}
-        )
-        
-        if not transcript:
-            confirmation = ConfirmView()
-            await interaction.response.send_message(
-                "No transcript has been generated for this ticket. Are you sure you want to delete it?",
-                view=confirmation,
-                ephemeral=True
+        # First try to acknowledge the interaction
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except Exception as e:
+            print(f"Error deferring delete interaction: {e}")
+            
+        # Check if ticket exists
+        ticket_data = None
+        try:
+            ticket_data = await self.bot.cogs["TicketSystem"].tickets_col.find_one(
+                {"guild_id": guild_id, "channel_id": channel.id}
             )
             
-            # Wait for confirmation
-            await confirmation.wait()
-            if not confirmation.value:
+            if not ticket_data:
+                await interaction.followup.send("Ticket not found in database. Please contact an administrator.", ephemeral=True)
                 return
-        
-        await interaction.response.send_message("Deleting ticket channel...", ephemeral=True)
-        
-        # Update ticket status to deleted in MongoDB
-        await self.bot.cogs["TicketSystem"].tickets_col.update_one(
-            {"guild_id": guild_id, "channel_id": channel_id},
-            {"$set": {
-                "status": "deleted",
-                "deleted_at": datetime.utcnow(),
-                "deleted_by": interaction.user.id
-            }}
-        )
-        
-        # Add a slight delay to allow the ephemeral message to be seen
-        await asyncio.sleep(2)
-        
-        # Delete the channel
-        try:
-            await interaction.channel.delete()
         except Exception as e:
-            # If we get here, the ephemeral message is already sent, so we can't send another response
-            print(f"Error deleting channel: {e}")
+            print(f"Error checking ticket: {e}")
+            await channel.send("Error checking ticket. Please try again or contact an administrator.")
+            return
+            
+        # Check if transcript exists
+        transcript_exists = False
+        try:
+            transcript = await self.bot.cogs["TicketSystem"].transcripts_col.find_one(
+                {"guild_id": guild_id, "channel_id": channel.id}
+            )
+            transcript_exists = transcript is not None
+        except Exception as e:
+            print(f"Error checking transcript: {e}")
+            # If we can't check, assume no transcript for safety
+            transcript_exists = False
+        
+        if not transcript_exists:
+            # No transcript - send warning and confirmation buttons
+            warning_embed = discord.Embed(
+                title="⚠️ Warning: No Transcript",
+                description="No transcript has been generated for this ticket.\nIf you continue, all ticket history will be permanently lost.",
+                color=discord.Color.gold()
+            )
+            
+            # Create a proper confirmation view that handles the deletion
+            confirm_view = ConfirmDeleteView(self.bot, channel.id, guild_id, user.id)
+            
+            # Send the warning with the confirmation buttons
+            try:
+                await channel.send(embed=warning_embed, view=confirm_view)
+                # Also send followup to acknowledge the interaction
+                await interaction.followup.send("Please confirm if you want to delete this ticket without generating a transcript.", ephemeral=True)
+            except Exception as e:
+                print(f"Error sending confirmation: {e}")
+                await channel.send("Error sending confirmation. Please try again or contact an administrator.")
+        else:
+            # Transcript exists, proceed with deletion immediately
+            try:
+                await channel.send("🗑️ **Deleting ticket in 3 seconds...**")
+                
+                # Update database
+                timestamp = datetime.utcnow()
+                await self.bot.cogs["TicketSystem"].tickets_col.update_one(
+                    {"guild_id": guild_id, "channel_id": channel.id},
+                    {"$set": {
+                        "status": "deleted",
+                        "deleted_at": timestamp,
+                        "deleted_by": user.id
+                    }}
+                )
+                
+                # Acknowledge the interaction
+                await interaction.followup.send("Deleting ticket channel...", ephemeral=True)
+                
+                # Wait briefly
+                await asyncio.sleep(3)
+                
+                # Delete the channel
+                await channel.delete()
+            except Exception as e:
+                print(f"Error deleting channel: {e}")
+                await channel.send(f"Error deleting channel: {e}. Please try again or contact an administrator.")
 
     async def _reopen_ticket(self, interaction: discord.Interaction):
         """Reopen a closed ticket"""
@@ -786,22 +905,74 @@ class ClosedTicketView(ui.View):
             # If we can't get the original response, at least log the error
             print(f"Error registering view for reopened ticket: {e}")
 
-class ConfirmView(ui.View):
-    def __init__(self):
-        super().__init__(timeout=60.0)
-        self.value = None
-    
-    @ui.button(label="Yes", style=discord.ButtonStyle.danger)
+class ConfirmDeleteView(ui.View):
+    """A separate view class specifically for delete confirmation"""
+    def __init__(self, bot, channel_id, guild_id, user_id):
+        super().__init__(timeout=60)  # 60 second timeout for safety
+        self.bot = bot
+        self.channel_id = channel_id
+        self.guild_id = guild_id
+        self.user_id = user_id
+        
+    @ui.button(label="Yes, Delete Ticket", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: ui.Button):
-        self.value = True
+        """Handle confirmation to delete"""
+        # Check if the user who clicked is the same who initiated
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("Only the user who initiated deletion can confirm it.", ephemeral=True)
+            return
+            
+        # Acknowledge the interaction
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except Exception as e:
+            print(f"Error deferring delete confirmation: {e}")
+            
+        # Get channel reference
+        channel = interaction.channel
+        
+        # Update ticket status in database
+        try:
+            timestamp = datetime.utcnow()
+            await self.bot.cogs["TicketSystem"].tickets_col.update_one(
+                {"guild_id": self.guild_id, "channel_id": self.channel_id},
+                {"$set": {
+                    "status": "deleted",
+                    "deleted_at": timestamp,
+                    "deleted_by": self.user_id
+                }}
+            )
+        except Exception as e:
+            print(f"Error updating ticket for deletion: {e}")
+            # Continue anyway
+            
+        # Send final confirmation message
+        try:
+            await channel.send("🗑️ **Deleting ticket in 3 seconds...**")
+        except Exception as e:
+            print(f"Error sending deletion message: {e}")
+            
+        # Wait briefly before deleting
+        await asyncio.sleep(3)
+        
+        # Delete the channel
+        try:
+            await channel.delete()
+        except Exception as e:
+            print(f"Error deleting channel: {e}")
+            try:
+                await channel.send(f"Failed to delete channel: {e}. Please contact an administrator.")
+            except:
+                pass
+            
+        # Stop the view from accepting further interactions
         self.stop()
-        await interaction.response.send_message("Confirmed", ephemeral=True)
-    
-    @ui.button(label="No", style=discord.ButtonStyle.secondary)
+        
+    @ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: ui.Button):
-        self.value = False
-        self.stop()
-        await interaction.response.send_message("Cancelled", ephemeral=True)
+        """Handle cancellation of deletion"""
+        await interaction.response.send_message("Ticket deletion cancelled.", ephemeral=True)
+        self.stop()  # Stop the view from accepting further interactions
 
 async def setup(bot):
     await bot.add_cog(TicketSystem(bot))
