@@ -9,7 +9,7 @@ from collections import defaultdict, Counter
 
 class AntiRaidCog(commands.Cog):
     """Anti-Raid system for Discord servers"""
-
+    
     def __init__(self, bot):
         self.bot = bot
         
@@ -21,6 +21,9 @@ class AntiRaidCog(commands.Cog):
         self.user_raid_score = defaultdict(int)  # User ID -> current raid score
         self.currently_processing = set()  # Set of user IDs currently being processed by AI
         self.muted_users = {}  # User ID -> unmute time
+        
+        # AI intent check counter
+        self.ai_checks_performed = defaultdict(int)  # User ID -> number of AI checks performed
 
         # Database setup (use bot's MongoDB if available)
         self.db = None
@@ -115,8 +118,8 @@ class AntiRaidCog(commands.Cog):
     @app_commands.describe(
         sensitivity="Raid detection sensitivity (0=Off, 1=Low, 2=Medium, 3=High)",
         mod_role="Moderator role to ping (required for alerts)",
-        staff_role="Staff role to ping (optional)",
-        manager_role="Manager role to ping (optional)"
+        manager_role="Community Manager role to ping (required for high sensitivity)",
+        raid_alert_channel="Channel to send detailed raid alerts to (optional)"
     )
     @app_commands.default_permissions(administrator=True)
     async def setup_antiraid(
@@ -124,8 +127,8 @@ class AntiRaidCog(commands.Cog):
         interaction: discord.Interaction,
         sensitivity: int,
         mod_role: Optional[discord.Role] = None,
-        staff_role: Optional[discord.Role] = None,
-        manager_role: Optional[discord.Role] = None
+        manager_role: Optional[discord.Role] = None,
+        raid_alert_channel: Optional[discord.TextChannel] = None
     ):
         """Set up the anti-raid system for your server"""
         # Check if user has administrator permissions
@@ -141,6 +144,11 @@ class AntiRaidCog(commands.Cog):
         # Make sure mod_role is provided if system is enabled
         if sensitivity > 0 and not mod_role:
             await interaction.response.send_message("Please specify a moderator role to ping for alerts. This is required when the system is enabled.", ephemeral=True)
+            return
+        
+        # Make sure manager_role is provided for high sensitivity
+        if sensitivity == 3 and not manager_role:
+            await interaction.response.send_message("Please specify a community manager role. This is required for high sensitivity level.", ephemeral=True)
             return
         
         # Check if bot has required permissions
@@ -159,13 +167,13 @@ class AntiRaidCog(commands.Cog):
         # Get guild ID
         guild_id = interaction.guild.id
         
-        # Store configuration (no mute_role_id as we're using direct muting)
+        # Store configuration
         self.config[guild_id] = {
             "enabled": sensitivity > 0,
             "sensitivity": sensitivity,
             "mod_role_id": mod_role.id if mod_role else None,
-            "staff_role_id": staff_role.id if staff_role else None,
-            "manager_role_id": manager_role.id if manager_role else None
+            "manager_role_id": manager_role.id if manager_role else None,
+            "raid_alert_channel_id": raid_alert_channel.id if raid_alert_channel else None
         }
         
         # Save to database
@@ -176,15 +184,22 @@ class AntiRaidCog(commands.Cog):
             message = "✅ Anti-Raid system has been **disabled** for this server."
         else:
             sensitivity_names = {1: "Low", 2: "Medium", 3: "High"}
+            timeout_durations = {1: "5 minutes", 2: "15 minutes", 3: "1 hour"}
             message = f"✅ Anti-Raid system has been set up with **{sensitivity_names[sensitivity]}** sensitivity!\n\n"
             
-            message += f"Moderator Role: {mod_role.mention}\n"
-                
-            if staff_role:
-                message += f"Staff Role: {staff_role.mention}\n"
+            message += f"• Default timeout duration: **{timeout_durations[sensitivity]}**\n"
+            message += f"• Moderator Role: {mod_role.mention}\n"
                 
             if manager_role:
-                message += f"Manager Role: {manager_role.mention}\n"
+                if sensitivity == 3:
+                    message += f"• Community Manager Role: {manager_role.mention} (will always be pinged)\n"
+                elif sensitivity == 2:
+                    message += f"• Community Manager Role: {manager_role.mention} (pinged for extended timeouts)\n"
+                else:
+                    message += f"• Community Manager Role: {manager_role.mention} (pinged only for max timeouts)\n"
+                
+            if raid_alert_channel:
+                message += f"• Raid Alert Channel: {raid_alert_channel.mention}\n"
             
             message += "\nThe system will automatically monitor messages for raid behavior, delete raid messages, and timeout raiders."
         
@@ -227,7 +242,7 @@ class AntiRaidCog(commands.Cog):
             print(f"AntiRaid: Error in AI detection: {e}")
             return (False, 0.0)
 
-    async def mute_user(self, user_id: int, guild_id: int, duration_hours: int = 1, reason: str = "Raid detection") -> bool:
+    async def mute_user(self, user_id: int, guild_id: int, duration_minutes: int = 5, reason: str = "Raid detection") -> bool:
         """Mute a user for the specified duration and delete their recent messages"""
         # Get guild and config
         guild = self.bot.get_guild(guild_id)
@@ -241,15 +256,16 @@ class AntiRaidCog(commands.Cog):
                 return False
             
             # Set timeout for the specified duration
-            timeout_duration = datetime.timedelta(hours=duration_hours)
+            timeout_duration = datetime.timedelta(minutes=duration_minutes)
             await member.timeout(timeout_duration, reason=reason)
             
             # Set unmute time for tracking
             unmute_time = datetime.datetime.utcnow() + timeout_duration
             self.muted_users[user_id] = unmute_time
             
-            # Delete recent messages from this user (up to 100 messages from the past 24 hours)
+            # Delete recent messages from this user (up to 500 messages from the past 24 hours)
             deleted_count = 0
+            deleted_messages = []  # Store messageID-channelID pairs for detailed alerts
             
             # Get the last 24 hours cutoff
             cutoff_time = datetime.datetime.utcnow() - datetime.timedelta(hours=24)
@@ -261,11 +277,21 @@ class AntiRaidCog(commands.Cog):
                     if not channel.permissions_for(guild.me).manage_messages:
                         continue
                         
-                    # Look through message history
-                    async for message in channel.history(limit=100, after=cutoff_time):
+                    # Look through message history, use higher limit (500) for more thorough cleaning
+                    async for message in channel.history(limit=500, after=cutoff_time):
                         # If message is from the raider
                         if message.author.id == user_id:
                             try:
+                                # Save message info before deleting
+                                deleted_messages.append({
+                                    "content": message.content,
+                                    "channel_id": channel.id,
+                                    "message_id": message.id,
+                                    "timestamp": message.created_at,
+                                    "jump_url": message.jump_url
+                                })
+                                
+                                # Delete the message
                                 await message.delete()
                                 deleted_count += 1
                             except Exception as e:
@@ -273,12 +299,12 @@ class AntiRaidCog(commands.Cog):
                 except Exception as e:
                     print(f"AntiRaid: Error checking channel {channel.name}: {e}")
             
-            print(f"AntiRaid: Muted user {user_id} for {duration_hours} hours and deleted {deleted_count} messages")
-            return True
+            print(f"AntiRaid: Muted user {user_id} for {duration_minutes} minutes and deleted {deleted_count} messages")
+            return True, deleted_messages  # Return success and the list of deleted messages
             
         except Exception as e:
             print(f"AntiRaid: Error muting user {user_id}: {e}")
-            return False
+            return False, []
 
     async def unmute_user(self, user_id: int) -> bool:
         """Unmute a user"""
@@ -433,12 +459,19 @@ class AntiRaidCog(commands.Cog):
         if total_score > 5:
             print(f"AntiRaid: User {user_id} raid score: {total_score}/{mute_threshold}")
         
+        # AI intent check counter for this user
+        if not hasattr(self, 'ai_checks_performed'):
+            self.ai_checks_performed = defaultdict(int)
+            
         # If score exceeds AI threshold but below mute threshold, check with AI (but not too often)
         if ai_threshold <= total_score < mute_threshold and user_id not in self.currently_processing:
-            # Only use AI for messages that are substantial
-            if len(message.content) >= 20:
+            # Only use AI for messages that are substantial AND haven't checked this user too many times
+            if len(message.content) >= 20 and self.ai_checks_performed[user_id] < 2:
                 self.currently_processing.add(user_id)
                 try:
+                    # Increment the AI check counter for this user
+                    self.ai_checks_performed[user_id] += 1
+                    
                     is_malicious, confidence = await self.detect_intent_with_ai(message.content)
                     
                     # If AI thinks it's malicious with high confidence, increase score
@@ -452,13 +485,42 @@ class AntiRaidCog(commands.Cog):
         
         # If score exceeds mute threshold, take action
         if total_score >= mute_threshold:
-            # Determine mute duration based on score
-            if total_score >= mute_threshold * 2:  # Very high score
-                duration_hours = 24
-                alert_level = "SEVERE"
+            # Determine mute duration based on sensitivity and severity
+            # For low sensitivity:
+            #   - Default: 5 minutes
+            #   - If AI confirmed malicious: Up to 60 minutes (1 hour)
+            # For medium sensitivity:
+            #   - Default: 15 minutes
+            #   - Severe: Up to 6 hours
+            # For high sensitivity:
+            #   - Default: 60 minutes (1 hour)
+            #   - Severe: Up to 24 hours
+            
+            is_severe = total_score >= mute_threshold * 1.5
+            
+            # Get base duration based on sensitivity
+            base_duration_minutes = {1: 5, 2: 15, 3: 60}[sensitivity]
+            
+            # Determine AI involvement
+            ai_confirmed = self.ai_checks_performed.get(user_id, 0) > 0 and is_severe
+            
+            # For low sensitivity, check if AI determined it was malicious
+            if sensitivity == 1:
+                if ai_confirmed:
+                    duration_minutes = 60  # Max 1 hour for low sensitivity with AI confirmation
+                    alert_level = "CONFIRMED"
+                else:
+                    duration_minutes = base_duration_minutes
+                    alert_level = "POTENTIAL"
             else:
-                duration_hours = 1
-                alert_level = "POTENTIAL"
+                # For medium/high sensitivity
+                if is_severe:
+                    # Severe cases get longer durations
+                    duration_minutes = {2: 360, 3: 1440}[sensitivity]  # 6 hours for medium, 24 hours for high
+                    alert_level = "SEVERE"
+                else:
+                    duration_minutes = base_duration_minutes
+                    alert_level = "POTENTIAL"
             
             # Try to delete the current triggering message
             try:
@@ -466,57 +528,109 @@ class AntiRaidCog(commands.Cog):
             except Exception as e:
                 print(f"AntiRaid: Failed to delete trigger message: {e}")
             
-            # Store message content before trying to mute (for the alert)
-            message_content = message.content
-            
             # Try to mute user and delete their messages
-            muted = await self.mute_user(user_id, guild_id, duration_hours, f"AntiRaid: Score {total_score}")
+            muted, deleted_messages = await self.mute_user(
+                user_id, 
+                guild_id, 
+                duration_minutes, 
+                f"AntiRaid: Score {total_score}"
+            )
             
             if muted:
                 # Get ping roles - prioritize mod_role
                 ping_mentions = []
                 
-                # Always include mod_role first if available
+                # Always include mod_role (required)
                 if config.get("mod_role_id"):
                     ping_mentions.append(f"<@&{config['mod_role_id']}>")
-                    
-                if config.get("staff_role_id"):
-                    ping_mentions.append(f"<@&{config['staff_role_id']}>")
-                    
-                if config.get("manager_role_id") and duration_hours > 1:  # Only ping managers for severe cases
-                    ping_mentions.append(f"<@&{config['manager_role_id']}>")
                 
-                # Create alert message
+                # Determine if community manager should be pinged based on sensitivity and duration
+                if config.get("manager_role_id"):
+                    ping_manager = False
+                    
+                    # High sensitivity: Always ping manager
+                    if sensitivity == 3:
+                        ping_manager = True
+                    # Medium sensitivity: Ping manager only if AI extended the timeout
+                    elif sensitivity == 2 and is_severe:
+                        ping_manager = True
+                    # Low sensitivity: Ping manager only if max timeout (1 hour)
+                    elif sensitivity == 1 and duration_minutes >= 60:
+                        ping_manager = True
+                        
+                    if ping_manager:
+                        ping_mentions.append(f"<@&{config['manager_role_id']}>")
+                
+                # Format minutes into hours and minutes if needed
+                duration_str = f"{duration_minutes} minutes"
+                if duration_minutes >= 60:
+                    hours = duration_minutes // 60
+                    mins = duration_minutes % 60
+                    if mins == 0:
+                        duration_str = f"{hours} hour{'s' if hours > 1 else ''}"
+                    else:
+                        duration_str = f"{hours} hour{'s' if hours > 1 else ''} and {mins} minute{'s' if mins > 1 else ''}"
+                
+                # Create standard alert message (without message content)
                 alert = f"⚠️ **{alert_level} RAID ALERT** ⚠️\n\n"
-                alert += f"User <@{user_id}> has been automatically timed out for {duration_hours} hours.\n"
+                alert += f"User <@{user_id}> has been automatically timed out for {duration_str}.\n"
                 alert += f"Raid Detection Score: {total_score}/{mute_threshold}\n"
                 alert += f"Channel: {message.channel.mention}\n"
-                alert += f"All recent messages from this user have been deleted.\n\n"
-                
-                if message_content:
-                    # Truncate message content if too long
-                    content_preview = message_content[:200] + ("..." if len(message_content) > 200 else "")
-                    alert += f"Last message content: ```{content_preview}```\n\n"
+                alert += f"Deleted {len(deleted_messages)} messages from this user.\n\n"
                 
                 if ping_mentions:
                     alert += f"Please investigate: {' '.join(ping_mentions)}"
                 
-                # Try to send alert to the channel
+                # Try to send standard alert to the channel
                 try:
                     await message.channel.send(alert)
                 except Exception as e:
                     print(f"AntiRaid: Error sending alert: {e}")
-                    # Try to find a mod channel to send alert
-                    for channel in message.guild.text_channels:
-                        if any(name in channel.name.lower() for name in ['mod', 'admin', 'log', 'alert']):
-                            try:
-                                await channel.send(alert)
-                                break
-                            except:
-                                continue
+                
+                # If we have a dedicated raid alert channel, send detailed info there
+                if config.get("raid_alert_channel_id") and deleted_messages:
+                    try:
+                        alert_channel = guild.get_channel(config["raid_alert_channel_id"])
+                        if alert_channel:
+                            # Create detailed alert with message previews
+                            detailed_alert = f"⚠️ **DETAILED {alert_level} RAID ALERT** ⚠️\n\n"
+                            detailed_alert += f"User <@{user_id}> has been automatically timed out for {duration_str}.\n"
+                            detailed_alert += f"Raid Detection Score: {total_score}/{mute_threshold}\n"
+                            detailed_alert += f"Deleted {len(deleted_messages)} messages from this user.\n\n"
+                            detailed_alert += f"**Raid Detection Channel:** {message.channel.mention}\n\n"
+                            
+                            # Add the most recent message (up to 3 messages max)
+                            detailed_alert += "**Sample of Deleted Messages:**\n"
+                            
+                            # Sort messages by timestamp (newest first)
+                            sorted_messages = sorted(deleted_messages, key=lambda x: x["timestamp"], reverse=True)
+                            
+                            # Show up to 3 most recent messages
+                            for i, msg in enumerate(sorted_messages[:3]):
+                                channel = guild.get_channel(msg["channel_id"])
+                                channel_mention = channel.mention if channel else f"<#{msg['channel_id']}>"
+                                
+                                # Format the message
+                                detailed_alert += f"**Message {i+1}:** [Link]({msg['jump_url']}) in {channel_mention}\n"
+                                
+                                # Truncate content if needed
+                                content = msg["content"]
+                                if len(content) > 400:
+                                    content = content[:397] + "..."
+                                    
+                                detailed_alert += f"```\n{content}\n```\n"
+                            
+                            # Send detailed alert
+                            await alert_channel.send(detailed_alert)
+                    except Exception as e:
+                        print(f"AntiRaid: Error sending detailed alert: {e}")
                 
                 # Reset the user's raid score
                 self.user_raid_score[user_id] = 0
+                
+                # Reset AI checks counter for this user
+                if user_id in self.ai_checks_performed:
+                    del self.ai_checks_performed[user_id]
     
     @commands.Cog.listener()
     async def on_message(self, message):
