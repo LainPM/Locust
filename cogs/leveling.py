@@ -10,7 +10,10 @@ import numpy as np
 import cv2
 import io
 import aiohttp
-from typing import Optional
+import re
+from typing import Optional, Literal
+import base64
+from io import BytesIO
 
 class Leveling(commands.Cog):
     """Leveling and ranking system for your Discord bot"""
@@ -20,9 +23,20 @@ class Leveling(commands.Cog):
         # Use the bot's MongoDB database
         self.levels_collection = self.bot.db["levels"]
         self.settings_collection = self.bot.db["level_settings"]
+        self.profiles_collection = self.bot.db["level_profiles"]
         self.xp_cooldown = {}  # User ID: Last message timestamp
         self.default_cooldown = 60  # Seconds between XP gain from messages
         self.default_xp_range = (15, 25)  # Min and max XP per message
+        
+        # Default card colors
+        self.default_card_settings = {
+            "background_color": "#232527",  # Dark theme
+            "progress_bar_color": "#5865F2",  # Discord blue
+            "text_color": "#FFFFFF",  # White
+            "progress_bar_background": "#3C3F45",  # Darker gray
+            "background_image": None,  # No image by default
+            "overlay_opacity": 0.7,  # Opacity of color overlay when using background image
+        }
     
     # Helper methods for the leveling system
     async def get_user_data(self, user_id, guild_id):
@@ -40,6 +54,24 @@ class Leveling(commands.Cog):
             }
             await self.levels_collection.insert_one(data)
         return data
+    
+    async def get_user_profile(self, user_id, guild_id):
+        """Get user's profile customization settings"""
+        profile = await self.profiles_collection.find_one({"user_id": user_id, "guild_id": guild_id})
+        if profile is None:
+            # Create default profile
+            profile = {
+                "user_id": user_id,
+                "guild_id": guild_id,
+                "background_color": self.default_card_settings["background_color"],
+                "progress_bar_color": self.default_card_settings["progress_bar_color"],
+                "text_color": self.default_card_settings["text_color"],
+                "progress_bar_background": self.default_card_settings["progress_bar_background"],
+                "background_image": None,
+                "overlay_opacity": self.default_card_settings["overlay_opacity"],
+            }
+            await self.profiles_collection.insert_one(profile)
+        return profile
     
     async def update_user_xp(self, user_id, guild_id, xp_to_add):
         """Update user's XP and level"""
@@ -99,7 +131,8 @@ class Leveling(commands.Cog):
                 "announce_level_up": True,
                 "level_up_channel": None,
                 "excluded_channels": [],
-                "role_rewards": {}  # level: role_id
+                "role_rewards": {},  # level: role_id
+                "allow_card_customization": True,  # Allow users to customize their cards
             }
             await self.settings_collection.insert_one(settings)
         return settings
@@ -125,6 +158,17 @@ class Leveling(commands.Cog):
             
         # Add 1 because indexOfArray is 0-based
         return result[0]["rank"] + 1
+    
+    def hex_to_bgr(self, hex_color):
+        """Convert hex color to BGR format (for OpenCV)"""
+        hex_color = hex_color.lstrip('#')
+        r, g, b = tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+        return (b, g, r)
+    
+    def is_valid_hex_color(self, color):
+        """Check if a string is a valid hex color"""
+        pattern = r'^#?([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$'
+        return bool(re.match(pattern, color))
     
     # Event listeners
     @commands.Cog.listener()
@@ -197,18 +241,49 @@ class Leveling(commands.Cog):
         width = 800
         height = 200
         
-        # Create a background
-        image = np.zeros((height, width, 4), dtype=np.uint8)
-        
-        # Add a background color
-        # Dark theme with slight gradient
-        for y in range(height):
-            for x in range(width):
-                # Create a subtle gradient
-                gradient_factor = y / height * 30  # Subtle variation
-                image[y, x] = (33 + gradient_factor, 33 + gradient_factor, 39 + gradient_factor, 255)
+        # Get user profile settings
+        profile = await self.get_user_profile(user.id, guild.id)
         
         try:
+            # Create a blank image with alpha channel
+            image = np.zeros((height, width, 4), dtype=np.uint8)
+            
+            # Check if user has a background image
+            background_image = None
+            if profile.get("background_image"):
+                try:
+                    # Decode base64 image
+                    img_data = base64.b64decode(profile["background_image"])
+                    img_array = np.frombuffer(img_data, np.uint8)
+                    background_image = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                    
+                    # Resize to fit
+                    background_image = cv2.resize(background_image, (width, height))
+                    
+                    # Convert to BGRA
+                    background_image = cv2.cvtColor(background_image, cv2.COLOR_BGR2BGRA)
+                    
+                    # Apply the background image
+                    image = background_image.copy()
+                    
+                    # Apply overlay with specified opacity
+                    overlay = np.zeros((height, width, 4), dtype=np.uint8)
+                    bg_color = self.hex_to_bgr(profile["background_color"])
+                    overlay[:, :] = (*bg_color, 255)  # Fill with background color
+                    
+                    # Apply the overlay with opacity
+                    alpha = profile["overlay_opacity"]
+                    image = cv2.addWeighted(image, 1-alpha, overlay, alpha, 0)
+                except Exception as e:
+                    print(f"Error loading background image: {e}")
+                    background_image = None
+            
+            # If no background image or loading failed, use solid color
+            if background_image is None:
+                # Fill with background color
+                bg_color = self.hex_to_bgr(profile["background_color"])
+                image[:, :] = (*bg_color, 255)
+            
             # Download user avatar
             async with aiohttp.ClientSession() as session:
                 avatar_url = str(user.display_avatar.url)
@@ -263,7 +338,8 @@ class Leveling(commands.Cog):
             font = cv2.FONT_HERSHEY_SIMPLEX
             font_scale = 1.0
             font_thickness = 2
-            font_color = (255, 255, 255, 255)  # White with full opacity
+            text_color = self.hex_to_bgr(profile["text_color"])
+            font_color = (*text_color, 255)  # Add alpha channel
             
             # Position username text
             text_position = (avatar_position[0] + avatar_size + 20, avatar_position[1] + 30)
@@ -285,38 +361,32 @@ class Leveling(commands.Cog):
             xp_position = (rank_position[0] - 150, level_position[1])
             cv2.putText(image, xp_text, xp_position, font, 0.6, font_color, 1)
             
-            # Draw progress bar background (darker)
+            # Draw progress bar background
             progress_bar_start = (text_position[0], level_position[1] + 30)
             progress_bar_width = width - progress_bar_start[0] - 30
             progress_bar_height = 30
+            
+            # Use user's preferred background color for progress bar
+            bar_bg_color = self.hex_to_bgr(profile["progress_bar_background"])
             cv2.rectangle(
                 image, 
                 progress_bar_start, 
                 (progress_bar_start[0] + progress_bar_width, progress_bar_start[1] + progress_bar_height), 
-                (60, 60, 70, 255), 
+                (*bar_bg_color, 255), 
                 -1
             )
             
             # Draw progress bar (filled portion)
             filled_width = int((progress / 100) * progress_bar_width)
             
-            # Choose color based on level (changing every 10 levels)
-            color_options = [
-                (52, 152, 219, 255),  # Blue
-                (155, 89, 182, 255),  # Purple
-                (46, 204, 113, 255),  # Green
-                (230, 126, 34, 255),  # Orange
-                (231, 76, 60, 255),   # Red
-                (241, 196, 15, 255),  # Yellow
-            ]
-            color_index = (level // 10) % len(color_options)
-            progress_color = color_options[color_index]
+            # Use user's preferred color for progress bar
+            progress_color = self.hex_to_bgr(profile["progress_bar_color"])
             
             cv2.rectangle(
                 image, 
                 progress_bar_start, 
                 (progress_bar_start[0] + filled_width, progress_bar_start[1] + progress_bar_height), 
-                progress_color, 
+                (*progress_color, 255), 
                 -1
             )
             
@@ -327,7 +397,7 @@ class Leveling(commands.Cog):
                 progress_bar_start[0] + (progress_bar_width - text_size[0]) // 2,
                 progress_bar_start[1] + (progress_bar_height + text_size[1]) // 2
             )
-            cv2.putText(image, percentage_text, percentage_position, font, 0.6, (255, 255, 255, 255), 1)
+            cv2.putText(image, percentage_text, percentage_position, font, 0.6, font_color, 1)
             
             # Add messages count
             message_count = user_data.get("messages", 0)
@@ -337,7 +407,11 @@ class Leveling(commands.Cog):
             
         except Exception as e:
             print(f"Error creating rank card: {e}")
-            # Add error text if image creation fails
+            # Create a simple error card
+            image = np.zeros((height, width, 4), dtype=np.uint8)
+            image[:, :] = (33, 33, 39, 255)  # Dark background
+            
+            # Add error text
             cv2.putText(
                 image, 
                 f"Error creating rank card: {str(e)[:50]}", 
@@ -477,26 +551,262 @@ class Leveling(commands.Cog):
         embed.set_footer(text=f"Requested by {interaction.user.display_name}", 
                         icon_url=interaction.user.display_avatar.url)
         
-        # Add page navigation instructions
-        embed.add_field(
-            name="\u200b",  # Zero-width space for spacing
-            value=f"Use `/leaderboard page:{page+1}` to see the next page" if page < total_pages else "\u200b",
-            inline=False
-        )
+        # Add navigation buttons if multiple pages
+        if total_pages > 1:
+            embed.add_field(
+                name="Navigation",
+                value=f"{'⬅️ `/leaderboard page:{page-1}`' if page > 1 else ''} "
+                      f"{'➡️ `/leaderboard page:{page+1}`' if page < total_pages else ''}",
+                inline=False
+            )
         
         await interaction.followup.send(embed=embed)
+    
+    # User card customization commands
+    @app_commands.command(
+        name="rankcard",
+        description="Customize your rank card"
+    )
+    @app_commands.describe(
+        setting="Which part of your rank card to customize",
+        color="Hex color code (e.g. #FF5500) - for color settings only",
+        reset="Reset to default settings"
+    )
+    async def rank_card_customize(
+        self, 
+        interaction: discord.Interaction,
+        setting: Literal["background", "progress_bar", "text", "progress_background"],
+        color: Optional[str] = None,
+        reset: Optional[bool] = False
+    ):
+        """Customize your rank card colors"""
+        await interaction.response.defer(ephemeral=True)
+        
+        # Get server settings
+        guild_settings = await self.get_guild_settings(interaction.guild.id)
+        
+        # Check if customization is allowed
+        if not guild_settings.get("allow_card_customization", True):
+            await interaction.followup.send("Rank card customization is disabled on this server.")
+            return
+        
+        # Get user profile
+        profile = await self.get_user_profile(interaction.user.id, interaction.guild.id)
+        
+        # Default colors for each setting
+        default_colors = {
+            "background": self.default_card_settings["background_color"],
+            "progress_bar": self.default_card_settings["progress_bar_color"],
+            "text": self.default_card_settings["text_color"],
+            "progress_background": self.default_card_settings["progress_bar_background"]
+        }
+        
+        # Map setting to profile field
+        field_mapping = {
+            "background": "background_color",
+            "progress_bar": "progress_bar_color",
+            "text": "text_color",
+            "progress_background": "progress_bar_background"
+        }
+        
+        field = field_mapping.get(setting)
+        if not field:
+            await interaction.followup.send(f"Invalid setting: {setting}")
+            return
+        
+        if reset:
+            # Reset to default
+            await self.profiles_collection.update_one(
+                {"user_id": interaction.user.id, "guild_id": interaction.guild.id},
+                {"$set": {field: default_colors[setting]}}
+            )
+            await interaction.followup.send(f"Reset {setting} color to default: `{default_colors[setting]}`")
+            return
+        
+        if not color:
+            # Show current setting
+            current_value = profile.get(field, default_colors[setting])
+            await interaction.followup.send(
+                f"Your current {setting} color is: `{current_value}`\n"
+                f"Use `/rankcard setting:{setting} color:#HEXCOLOR` to change it."
+            )
+            return
+        
+        # Validate hex color
+        if not self.is_valid_hex_color(color):
+            await interaction.followup.send(
+                "Invalid hex color. Please use format `#RRGGBB` (e.g. `#FF5500`)."
+            )
+            return
+        
+        # Ensure color starts with #
+        if not color.startswith('#'):
+            color = f"#{color}"
+        
+        # Update setting
+        await self.profiles_collection.update_one(
+            {"user_id": interaction.user.id, "guild_id": interaction.guild.id},
+            {"$set": {field: color}}
+        )
+        
+        await interaction.followup.send(
+            f"Updated your rank card {setting} color to: `{color}`\n"
+            f"Use `/rank` to see how it looks!"
+        )
+    
+    @app_commands.command(
+        name="rankimage",
+        description="Set a background image for your rank card"
+    )
+    @app_commands.describe(
+        action="Add or remove a background image",
+        image="Upload an image to use as your rank card background",
+        opacity="Opacity of color overlay (0.0 to 1.0, where 1.0 is solid color)"
+    )
+    async def rank_background_image(
+        self,
+        interaction: discord.Interaction,
+        action: Literal["set", "remove", "opacity"],
+        image: Optional[discord.Attachment] = None,
+        opacity: Optional[float] = None
+    ):
+        """Set or remove a background image for your rank card"""
+        await interaction.response.defer(ephemeral=True)
+        
+        # Get server settings
+        guild_settings = await self.get_guild_settings(interaction.guild.id)
+        
+        # Check if customization is allowed
+        if not guild_settings.get("allow_card_customization", True):
+            await interaction.followup.send("Rank card customization is disabled on this server.")
+            return
+        
+        # Get user profile
+        profile = await self.get_user_profile(interaction.user.id, interaction.guild.id)
+        
+        if action == "opacity" and opacity is not None:
+            # Validate opacity
+            if opacity < 0 or opacity > 1:
+                await interaction.followup.send("Opacity must be between 0.0 and 1.0.")
+                return
+                
+            # Update opacity
+            await self.profiles_collection.update_one(
+                {"user_id": interaction.user.id, "guild_id": interaction.guild.id},
+                {"$set": {"overlay_opacity": opacity}}
+            )
+            
+            await interaction.followup.send(f"Updated your background overlay opacity to: {opacity}")
+            return
+            
+        if action == "remove":
+            # Remove background image
+            await self.profiles_collection.update_one(
+                {"user_id": interaction.user.id, "guild_id": interaction.guild.id},
+                {"$set": {"background_image": None}}
+            )
+            
+            await interaction.followup.send("Removed your rank card background image.")
+            return
+            
+        if action == "set":
+            if not image:
+                await interaction.followup.send("Please upload an image to set as your background.")
+                return
+                
+            # Check file size (5MB max)
+            if image.size > 5 * 1024 * 1024:
+                await interaction.followup.send("Image too large. Please use an image under 5MB.")
+                return
+                
+            # Check if it's an image
+            if not image.content_type.startswith('image/'):
+                await interaction.followup.send("Please upload a valid image file.")
+                return
+                
+            try:
+                # Download the image
+                img_bytes = await image.read()
+                
+                # Resize the image to save space
+                img_array = np.frombuffer(img_bytes, np.uint8)
+                img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                
+                # Resize to fit rank card
+                img = cv2.resize(img, (800, 200))
+                
+                # Convert back to bytes
+                _, buffer = cv2.imencode(".png", img)
+                img_bytes = buffer.tobytes()
+                
+                # Convert to base64 for storage
+                b64_image = base64.b64encode(img_bytes).decode('utf-8')
+                
+                # Store in database
+                await self.profiles_collection.update_one(
+                    {"user_id": interaction.user.id, "guild_id": interaction.guild.id},
+                    {"$set": {"background_image": b64_image}}
+                )
+                
+                await interaction.followup.send(
+                    "Background image set! Use `/rank` to see how it looks.\n"
+                    "You can adjust the color overlay opacity with `/rankimage action:opacity opacity:0.5`"
+                )
+                
+            except Exception as e:
+                print(f"Error processing image: {e}")
+                await interaction.followup.send(f"Error processing image: {str(e)}")
+    
+    @app_commands.command(
+        name="resetrankcard",
+        description="Reset all your rank card customizations to default"
+    )
+    async def reset_rank_card(self, interaction: discord.Interaction):
+        """Reset all your rank card customizations to default"""
+        await interaction.response.defer(ephemeral=True)
+        
+        # Delete user profile (will be recreated with defaults)
+        await self.profiles_collection.delete_one({
+            "user_id": interaction.user.id, 
+            "guild_id": interaction.guild.id
+        })
+        
+        await interaction.followup.send("Reset all your rank card customizations to default settings.")
     
     # Admin commands - Level settings
     @app_commands.command(
         name="levelconfig",
         description="Configure the leveling system (Admin only)"
     )
+    @app_commands.describe(
+        setting="Which setting to configure",
+        toggle="Enable or disable the setting (for toggle settings)",
+        channel="Channel to use (for channel settings)",
+        amount="Numeric value (for number settings)",
+        role="Role to use (for role settings)",
+        level="Level number (for level-based settings)"
+    )
+    @app_commands.choices(setting=[
+        app_commands.Choice(name="Enable/Disable Leveling", value="toggle_system"),
+        app_commands.Choice(name="XP Cooldown", value="cooldown"),
+        app_commands.Choice(name="Minimum XP", value="min_xp"),
+        app_commands.Choice(name="Maximum XP", value="max_xp"),
+        app_commands.Choice(name="Level Up Announcements", value="toggle_announcements"),
+        app_commands.Choice(name="Announcement Channel", value="announcement_channel"),
+        app_commands.Choice(name="Exclude Channel", value="exclude_channel"),
+        app_commands.Choice(name="Include Channel", value="include_channel"),
+        app_commands.Choice(name="Allow Card Customization", value="toggle_customization"),
+    ])
     @app_commands.checks.has_permissions(administrator=True)
     async def level_config(
         self, 
         interaction: discord.Interaction, 
-        setting: str, 
-        value: str
+        setting: str,
+        toggle: Optional[bool] = None,
+        channel: Optional[discord.TextChannel] = None,
+        amount: Optional[int] = None,
+        role: Optional[discord.Role] = None,
+        level: Optional[int] = None
     ):
         """Configure the leveling system (Admin only)"""
         await interaction.response.defer(ephemeral=True)
@@ -504,137 +814,144 @@ class Leveling(commands.Cog):
         # Get current settings
         settings = await self.get_guild_settings(interaction.guild.id)
         
-        # Parse setting and value
-        setting = setting.lower()
-        
-        if setting == "enabled":
-            # Enable/disable the leveling system
-            if value.lower() in ["true", "yes", "on", "1"]:
-                settings["enabled"] = True
-                result = "Leveling system has been **enabled**."
-            elif value.lower() in ["false", "no", "off", "0"]:
-                settings["enabled"] = False
-                result = "Leveling system has been **disabled**."
-            else:
-                await interaction.followup.send("Invalid value. Use 'true' or 'false'.")
+        if setting == "toggle_system":
+            if toggle is None:
+                await interaction.followup.send(
+                    f"Leveling system is currently **{'enabled' if settings['enabled'] else 'disabled'}**.\n"
+                    f"Use `/levelconfig setting:toggle_system toggle:True/False` to change."
+                )
                 return
                 
+            settings["enabled"] = toggle
+            result = f"Leveling system has been **{'enabled' if toggle else 'disabled'}**."
+            
         elif setting == "cooldown":
-            # Set XP gain cooldown
-            try:
-                cooldown = int(value)
-                if cooldown < 0:
-                    await interaction.followup.send("Cooldown cannot be negative.")
-                    return
-                settings["cooldown"] = cooldown
-                result = f"XP cooldown set to **{cooldown} seconds**."
-            except ValueError:
-                await interaction.followup.send("Invalid value. Please provide a number for cooldown.")
+            if amount is None:
+                await interaction.followup.send(
+                    f"Current XP cooldown is **{settings['cooldown']} seconds**.\n"
+                    f"Use `/levelconfig setting:cooldown amount:seconds` to change."
+                )
                 return
                 
-        elif setting == "minxp":
-            # Set minimum XP per message
-            try:
-                min_xp = int(value)
-                if min_xp < 1:
-                    await interaction.followup.send("Minimum XP must be at least 1.")
-                    return
-                if min_xp > settings["max_xp"]:
-                    await interaction.followup.send(f"Minimum XP cannot be greater than maximum XP ({settings['max_xp']}).")
-                    return
-                settings["min_xp"] = min_xp
-                result = f"Minimum XP set to **{min_xp}**."
-            except ValueError:
-                await interaction.followup.send("Invalid value. Please provide a number for minimum XP.")
+            if amount < 0:
+                await interaction.followup.send("Cooldown cannot be negative.")
                 return
                 
-        elif setting == "maxxp":
-            # Set maximum XP per message
-            try:
-                max_xp = int(value)
-                if max_xp < settings["min_xp"]:
-                    await interaction.followup.send(f"Maximum XP cannot be less than minimum XP ({settings['min_xp']}).")
-                    return
-                settings["max_xp"] = max_xp
-                result = f"Maximum XP set to **{max_xp}**."
-            except ValueError:
-                await interaction.followup.send("Invalid value. Please provide a number for maximum XP.")
+            settings["cooldown"] = amount
+            result = f"XP cooldown set to **{amount} seconds**."
+            
+        elif setting == "min_xp":
+            if amount is None:
+                await interaction.followup.send(
+                    f"Current minimum XP per message is **{settings['min_xp']}**.\n"
+                    f"Use `/levelconfig setting:min_xp amount:value` to change."
+                )
                 return
                 
-        elif setting == "announce":
-            # Set level up announcement
-            if value.lower() in ["true", "yes", "on", "1"]:
-                settings["announce_level_up"] = True
-                result = "Level up announcements have been **enabled**."
-            elif value.lower() in ["false", "no", "off", "0"]:
-                settings["announce_level_up"] = False
-                result = "Level up announcements have been **disabled**."
-            else:
-                await interaction.followup.send("Invalid value. Use 'true' or 'false'.")
+            if amount < 1:
+                await interaction.followup.send("Minimum XP must be at least 1.")
                 return
                 
-        elif setting == "announcechannel":
-            # Set level up announcement channel
-            if value.lower() in ["none", "reset", "clear", "0"]:
-                settings["level_up_channel"] = None
-                result = "Level up announcements will be sent in the same channel as the message."
-            else:
-                # Try to parse channel ID or mention
-                try:
-                    # Check if it's a channel mention
-                    if value.startswith("<#") and value.endswith(">"):
-                        channel_id = int(value[2:-1])
-                    else:
-                        channel_id = int(value)
-                        
-                    # Verify channel exists
-                    channel = interaction.guild.get_channel(channel_id)
-                    if channel is None:
-                        await interaction.followup.send("Channel not found.")
-                        return
-                        
-                    settings["level_up_channel"] = str(channel_id)
-                    result = f"Level up announcements will be sent in {channel.mention}."
-                except (ValueError, IndexError):
-                    await interaction.followup.send("Invalid channel. Please provide a valid channel ID or mention.")
-                    return
-                    
-        elif setting == "excludechannel":
-            # Add or remove excluded channel
-            try:
-                # Check if it's a channel mention
-                if value.startswith("<#") and value.endswith(">"):
-                    channel_id = value[2:-1]
+            if amount > settings["max_xp"]:
+                await interaction.followup.send(f"Minimum XP cannot be greater than maximum XP ({settings['max_xp']}).")
+                return
+                
+            settings["min_xp"] = amount
+            result = f"Minimum XP set to **{amount}**."
+            
+        elif setting == "max_xp":
+            if amount is None:
+                await interaction.followup.send(
+                    f"Current maximum XP per message is **{settings['max_xp']}**.\n"
+                    f"Use `/levelconfig setting:max_xp amount:value` to change."
+                )
+                return
+                
+            if amount < settings["min_xp"]:
+                await interaction.followup.send(f"Maximum XP cannot be less than minimum XP ({settings['min_xp']}).")
+                return
+                
+            settings["max_xp"] = amount
+            result = f"Maximum XP set to **{amount}**."
+            
+        elif setting == "toggle_announcements":
+            if toggle is None:
+                await interaction.followup.send(
+                    f"Level up announcements are currently **{'enabled' if settings['announce_level_up'] else 'disabled'}**.\n"
+                    f"Use `/levelconfig setting:toggle_announcements toggle:True/False` to change."
+                )
+                return
+                
+            settings["announce_level_up"] = toggle
+            result = f"Level up announcements have been **{'enabled' if toggle else 'disabled'}**."
+            
+        elif setting == "announcement_channel":
+            if channel is None:
+                current_channel = settings["level_up_channel"]
+                if current_channel:
+                    channel_obj = interaction.guild.get_channel(int(current_channel))
+                    channel_text = f"<#{current_channel}>" if channel_obj else f"Unknown Channel ({current_channel})"
                 else:
-                    channel_id = value
+                    channel_text = "Same channel as the message"
                     
-                # Verify channel exists
-                channel = interaction.guild.get_channel(int(channel_id))
-                if channel is None:
-                    await interaction.followup.send("Channel not found.")
-                    return
-                    
-                # Add or remove from excluded channels
-                if channel_id in settings["excluded_channels"]:
-                    settings["excluded_channels"].remove(channel_id)
-                    result = f"{channel.mention} is no longer excluded from XP gain."
-                else:
-                    settings["excluded_channels"].append(channel_id)
-                    result = f"{channel.mention} is now excluded from XP gain."
-            except (ValueError, IndexError):
-                await interaction.followup.send("Invalid channel. Please provide a valid channel ID or mention.")
+                await interaction.followup.send(
+                    f"Current announcement channel: **{channel_text}**.\n"
+                    f"Use `/levelconfig setting:announcement_channel channel:#channel` to change, or don't specify a channel to reset."
+                )
                 return
                 
+            settings["level_up_channel"] = str(channel.id)
+            result = f"Level up announcements will be sent in {channel.mention}."
+            
+        elif setting == "exclude_channel":
+            if channel is None:
+                excluded = settings["excluded_channels"]
+                if excluded:
+                    channels_text = ", ".join([f"<#{ch}>" for ch in excluded])
+                else:
+                    channels_text = "None"
+                    
+                await interaction.followup.send(
+                    f"Currently excluded channels: {channels_text}\n"
+                    f"Use `/levelconfig setting:exclude_channel channel:#channel` to exclude a channel."
+                )
+                return
+                
+            channel_id = str(channel.id)
+            if channel_id not in settings["excluded_channels"]:
+                settings["excluded_channels"].append(channel_id)
+                result = f"{channel.mention} is now excluded from XP gain."
+            else:
+                result = f"{channel.mention} is already excluded from XP gain."
+                
+        elif setting == "include_channel":
+            if channel is None:
+                await interaction.followup.send(
+                    f"Use `/levelconfig setting:include_channel channel:#channel` to remove a channel from the exclusion list."
+                )
+                return
+                
+            channel_id = str(channel.id)
+            if channel_id in settings["excluded_channels"]:
+                settings["excluded_channels"].remove(channel_id)
+                result = f"{channel.mention} is no longer excluded from XP gain."
+            else:
+                result = f"{channel.mention} is not in the exclusion list."
+                
+        elif setting == "toggle_customization":
+            if toggle is None:
+                await interaction.followup.send(
+                    f"Rank card customization is currently **{'enabled' if settings.get('allow_card_customization', True) else 'disabled'}**.\n"
+                    f"Use `/levelconfig setting:toggle_customization toggle:True/False` to change."
+                )
+                return
+                
+            settings["allow_card_customization"] = toggle
+            result = f"Rank card customization has been **{'enabled' if toggle else 'disabled'}**."
+            
         else:
             await interaction.followup.send(
-                "Unknown setting. Available settings:\n"
-                "- `enabled` (true/false)\n"
-                "- `cooldown` (seconds)\n"
-                "- `minxp` (number)\n"
-                "- `maxxp` (number)\n"
-                "- `announce` (true/false)\n"
-                "- `announcechannel` (channel ID or 'none')\n"
-                "- `excludechannel` (channel ID to toggle)"
+                "Invalid setting. Please use one of the provided choices."
             )
             return
             
@@ -650,6 +967,10 @@ class Leveling(commands.Cog):
     @app_commands.command(
         name="setlevel",
         description="Set a user's level (Admin only)"
+    )
+    @app_commands.describe(
+        user="The user to modify",
+        level="The level to set"
     )
     @app_commands.checks.has_permissions(administrator=True)
     async def set_level(
@@ -681,6 +1002,10 @@ class Leveling(commands.Cog):
     @app_commands.command(
         name="addxp",
         description="Add XP to a user (Admin only)"
+    )
+    @app_commands.describe(
+        user="The user to modify",
+        xp="The amount of XP to add"
     )
     @app_commands.checks.has_permissions(administrator=True)
     async def add_xp(
@@ -718,6 +1043,9 @@ class Leveling(commands.Cog):
         name="resetlevels",
         description="Reset all levels and XP for the server (Admin only)"
     )
+    @app_commands.describe(
+        confirmation="Type 'confirm reset all levels' to confirm"
+    )
     @app_commands.checks.has_permissions(administrator=True)
     async def reset_levels(
         self, 
@@ -744,6 +1072,10 @@ class Leveling(commands.Cog):
     @app_commands.command(
         name="levelreward",
         description="Set up a role reward for reaching a level (Admin only)"
+    )
+    @app_commands.describe(
+        level="The level required to earn this role",
+        role="The role to award (leave empty to remove reward)"
     )
     @app_commands.checks.has_permissions(administrator=True)
     async def level_reward(
@@ -883,11 +1215,33 @@ class Leveling(commands.Cog):
         embed.add_field(name="XP Per Message", value=f"{settings['min_xp']} - {settings['max_xp']}", inline=True)
         embed.add_field(name="Announce Level Ups", value=str(settings["announce_level_up"]), inline=True)
         embed.add_field(name="Announcement Channel", value=announce_channel, inline=True)
+        embed.add_field(name="Card Customization", value=str(settings.get("allow_card_customization", True)), inline=True)
         embed.add_field(name="Excluded Channels", value=excluded_text, inline=False)
         
         # Count role rewards
         role_rewards = settings.get("role_rewards", {})
         embed.add_field(name="Role Rewards", value=f"{len(role_rewards)} rewards set" if role_rewards else "None", inline=False)
+        
+        # Get some stats
+        total_users = await self.levels_collection.count_documents({"guild_id": interaction.guild.id})
+        
+        embed.add_field(name="Total Users", value=str(total_users), inline=True)
+        
+        # Get top 3 users
+        top_users = await self.get_leaderboard(interaction.guild.id, 3)
+        
+        if top_users:
+            top_users_text = ""
+            for i, data in enumerate(top_users):
+                user_id = data["user_id"]
+                level = data["level"]
+                
+                member = interaction.guild.get_member(user_id)
+                name = member.display_name if member else f"User {user_id}"
+                
+                top_users_text += f"#{i+1} **{name}** (Level {level})\n"
+                
+            embed.add_field(name="Top Users", value=top_users_text, inline=True)
         
         await interaction.followup.send(embed=embed)
 
