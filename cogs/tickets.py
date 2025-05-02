@@ -184,12 +184,14 @@ class TicketManagementView(ui.View):
         channel = interaction.channel
         guild_id = interaction.guild.id
         
-        # Get ticket data
+        # Get fresh ticket data
         ticket = await cog.tickets_col.find_one({"guild_id": guild_id, "channel_id": channel.id})
         if not ticket:
             return await interaction.followup.send("This is not a ticket channel!", ephemeral=True)
         
-        if ticket["status"] == "closed":
+        # Always re-check status from DB to avoid stale data
+        ticket = await cog.tickets_col.find_one({"guild_id": guild_id, "channel_id": channel.id})
+        if ticket.get("status") != "open":
             return await interaction.followup.send("This ticket is already closed!", ephemeral=True)
         
         # Update ticket
@@ -363,14 +365,16 @@ class TicketActionView(ui.View):
         if not ticket:
             return await interaction.followup.send("This is not a ticket channel!", ephemeral=True)
         
-        # Update ticket
+        # Update ticket - explicitly reset all closed-related fields
         timestamp = datetime.utcnow()
         await cog.tickets_col.update_one(
             {"guild_id": guild_id, "channel_id": channel.id},
             {"$set": {
                 "status": "open",
                 "reopened_at": timestamp,
-                "reopened_by": interaction.user.id
+                "reopened_by": interaction.user.id,
+                "closed_at": None,  # Reset closed timestamp
+                "closed_by": None   # Reset closed_by user ID
             }}
         )
         
