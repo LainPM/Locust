@@ -149,8 +149,22 @@ class MyBot(commands.Bot):
             except:
                 pass
     
-    async def sync_direct(self, command_data, guild_id=None):
-        """Sync a command directly using Discord's API with better error handling"""
+    async def sync_direct(self, command_data, guild_id=None, timeout=10.0):
+        """Sync a command directly using Discord's API with timeout"""
+        # Create a task for the sync operation
+        sync_task = asyncio.create_task(self._sync_request(command_data, guild_id))
+        
+        try:
+            # Wait for the task with a timeout
+            return await asyncio.wait_for(sync_task, timeout=timeout)
+        except asyncio.TimeoutError:
+            # Task took too long, cancel it
+            sync_task.cancel()
+            print(f"Command sync timed out after {timeout} seconds for command: {command_data.get('name', 'unknown')}")
+            return False, TimeoutError(f"Sync operation timed out after {timeout} seconds")
+        
+    async def _sync_request(self, command_data, guild_id=None):
+        """Internal method to make the actual sync request"""
         try:
             # Get application ID
             application_id = self.application.id
@@ -393,7 +407,7 @@ async def sync_reset(ctx):
 @bot.command()
 @commands.is_owner()
 async def sync_one(ctx, command_name: str):
-    """Sync a single command by name using direct HTTP API"""
+    """Sync a single command by name using direct HTTP API with 10-second timeout"""
     if bot.currently_syncing:
         elapsed = (datetime.datetime.now() - bot.sync_start_time).total_seconds()
         message = await ctx.send(f"A sync operation is already in progress for {elapsed:.1f} seconds. Use `!sync_reset` if it's stuck.")
@@ -428,7 +442,7 @@ async def sync_one(ctx, command_name: str):
             bot.end_sync()  # Mark sync as complete
             return
         
-        status_message = await ctx.send(f"Syncing command '/{command.name}'...")
+        status_message = await ctx.send(f"Syncing command '/{command.name}' with 10-second timeout...")
         
         # Get registered commands to check if already synced
         registered_commands = await bot.get_registered_commands()
@@ -449,15 +463,18 @@ async def sync_one(ctx, command_name: str):
         # Get command data
         command_data = bot.get_command_json(command)
         
-        # Sync command
-        success, result = await bot.sync_direct(command_data)
+        # Sync command with 10-second timeout
+        success, result = await bot.sync_direct(command_data, timeout=10.0)
         
         if success:
             # Force refresh the registered commands cache
             await bot.get_registered_commands(force_refresh=True)
             await status_message.edit(content=f"✅ Command '/{command.name}' synced successfully!")
         else:
-            if isinstance(result, discord.HTTPException) and result.status == 429:
+            if isinstance(result, TimeoutError):
+                # Timeout error
+                await status_message.edit(content=f"⏱️ Sync timed out after 10 seconds for command '/{command.name}'. Try again later.")
+            elif isinstance(result, discord.HTTPException) and result.status == 429:
                 # Rate limited
                 retry_after = result.retry_after
                 await status_message.edit(content=f"⏱️ Rate limited! Please wait {retry_after:.1f} seconds before trying again.")
@@ -489,7 +506,7 @@ async def sync_one(ctx, command_name: str):
 @bot.command()
 @commands.is_owner()
 async def sync_all(ctx):
-    """Sync only commands that aren't already synced"""
+    """Sync only commands that aren't already synced with per-command timeout"""
     if bot.currently_syncing:
         elapsed = (datetime.datetime.now() - bot.sync_start_time).total_seconds()
         message = await ctx.send(f"A sync operation is already in progress for {elapsed:.1f} seconds. Use `!sync_reset` if it's stuck.")
@@ -576,6 +593,7 @@ async def sync_all(ctx):
         
         success_count = 0
         error_count = 0
+        timeout_count = 0
         rate_limited = False
         
         for i, command in enumerate(commands_to_sync):
@@ -596,14 +614,24 @@ async def sync_all(ctx):
                 
                 await status_message.edit(content=status_text)
                 
-                # Get command data and sync
+                # Get command data and sync with a 15-second timeout
                 command_data = bot.get_command_json(command)
-                success, result = await bot.sync_direct(command_data)
+                success, result = await bot.sync_direct(command_data, timeout=15.0)
                 
                 if success:
                     success_count += 1
                 else:
-                    if isinstance(result, discord.HTTPException) and result.status == 429:
+                    if isinstance(result, TimeoutError):
+                        # Timeout error - just move on to the next command
+                        timeout_count += 1
+                        error_message = await ctx.send(f"⏱️ Sync timed out for command '/{command.name}' - moving to next command.")
+                        if ctx.guild:
+                            try:
+                                await asyncio.sleep(5)
+                                await error_message.delete()
+                            except:
+                                pass
+                    elif isinstance(result, discord.HTTPException) and result.status == 429:
                         # Rate limited, wait longer
                         retry_after = result.retry_after * 1.5  # Add buffer
                         rate_limited = True
@@ -617,9 +645,18 @@ async def sync_all(ctx):
                         await asyncio.sleep(retry_after)
                         
                         # Try again
-                        success, retry_result = await bot.sync_direct(command_data)
+                        success, retry_result = await bot.sync_direct(command_data, timeout=15.0)
                         if success:
                             success_count += 1
+                        elif isinstance(retry_result, TimeoutError):
+                            timeout_count += 1
+                            error_message = await ctx.send(f"⏱️ Sync timed out for command '/{command.name}' after retry - moving to next command.")
+                            if ctx.guild:
+                                try:
+                                    await asyncio.sleep(5)
+                                    await error_message.delete()
+                                except:
+                                    pass
                         else:
                             error_count += 1
                             error_message = await ctx.send(f"Failed to sync `/{command.name}` after retry: {retry_result}")
@@ -665,7 +702,9 @@ async def sync_all(ctx):
         
         await status_message.edit(
             content=f"Sync complete!\n"
-                    f"Successfully synced {success_count}/{total} commands with {error_count} errors.\n"
+                    f"✅ Successfully synced: {success_count}/{total} commands\n"
+                    f"⏱️ Timed out: {timeout_count}/{total} commands\n"
+                    f"❌ Failed: {error_count}/{total} commands\n"
                     f"Total time: {minutes}m {seconds}s"
         )
         
