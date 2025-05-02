@@ -536,57 +536,56 @@ class Moderation(commands.Cog):
             await interaction.followup.send(f"An error occurred: {str(e)}", ephemeral=True)
     
     @app_commands.command(name="modlogs", description="Check moderation logs for a user")
-@app_commands.describe(
-    user="The user to check logs for"
-)
-@app_commands.default_permissions(kick_members=True)
-async def modlogs(self, interaction: discord.Interaction, user: discord.Member):
-    # Check permission
-    if not self.check_permissions(interaction):
-        return await interaction.response.send_message(
-            "You don't have permission to view moderation logs!", 
-            ephemeral=True
-        )
-    
-    # Defer response
-    await interaction.response.defer()
-    
-    try:
-        # Get user logs
-        logs_list = await self.get_user_logs(interaction.guild.id, user.id)
-        
-        if not logs_list:
-            return await interaction.followup.send(
-                f"{user.mention} has no moderation logs.", 
-                ephemeral=False
+    @app_commands.describe(
+        user="The user to check logs for"
+    )
+    @app_commands.default_permissions(kick_members=True)
+    async def modlogs(self, interaction: discord.Interaction, user: discord.Member):
+        # Check permission
+        if not self.check_permissions(interaction):
+            return await interaction.response.send_message(
+                "You don't have permission to view moderation logs!", 
+                ephemeral=True
             )
         
-        # Set up pagination
-        logs_per_page = 5
-        log_count = len(logs_list)
-        max_pages = max(1, (log_count - 1) // logs_per_page + 1)
+        # Defer response
+        await interaction.response.defer()
         
-        # Create pagination view
-        view = ModLogPaginationView(
-            logs_list, 
-            user.display_name, 
-            user.id, 
-            interaction.guild, 
-            logs_per_page=logs_per_page
-        )
-        
-        # Display first page
-        embed = view.create_log_embed()
-        embed.set_thumbnail(url=user.display_avatar.url)
-        
-        # Always use the view even for a single page - this is the fix
-        await interaction.followup.send(embed=embed, view=view)
-    except Exception as e:
-        print(f"Error in modlogs command: {e}")
-        await interaction.followup.send(
-            f"An error occurred while fetching moderation logs: {str(e)}", 
-            ephemeral=True
-        )
+        try:
+            # Get user logs
+            logs_list = await self.get_user_logs(interaction.guild.id, user.id)
+            
+            if not logs_list:
+                return await interaction.followup.send(
+                    f"{user.mention} has no moderation logs.", 
+                    ephemeral=False
+                )
+            
+            # Set up pagination
+            logs_per_page = 5
+            log_count = len(logs_list)
+            
+            # Create pagination view
+            view = ModLogPaginationView(
+                logs_list, 
+                user.display_name, 
+                user.id, 
+                interaction.guild, 
+                logs_per_page=logs_per_page
+            )
+            
+            # Display first page
+            embed = view.create_log_embed()
+            embed.set_thumbnail(url=user.display_avatar.url)
+            
+            # Always use the view - this is the fix
+            await interaction.followup.send(embed=embed, view=view)
+        except Exception as e:
+            print(f"Error in modlogs command: {e}")
+            await interaction.followup.send(
+                f"An error occurred while fetching moderation logs: {str(e)}", 
+                ephemeral=True
+            )
     
     @app_commands.command(name="clearmodlogs", description="Clear all moderation logs for a user")
     @app_commands.describe(
