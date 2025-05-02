@@ -28,7 +28,9 @@ class TicketSystem(commands.Cog):
         transcript_channel='Channel to send transcripts',
         ticket_category='Category to create tickets under',
         ticket_types='Comma-separated ticket types (e.g. Support,Bug)',
-        moderator_roles='Comma-separated role IDs or @roles'
+        moderator_roles='Comma-separated role IDs or @roles',
+        panel_title='Title for the ticket panel embed (optional)',
+        panel_description='Description for the ticket panel embed (optional)'
     )
     @app_commands.checks.has_permissions(administrator=True)
     async def setup_ticket_system(
@@ -37,7 +39,9 @@ class TicketSystem(commands.Cog):
         transcript_channel: discord.TextChannel,
         ticket_category: discord.CategoryChannel,
         ticket_types: str,
-        moderator_roles: str
+        moderator_roles: str,
+        panel_title: Optional[str] = "Support Tickets",
+        panel_description: Optional[str] = "Click a button below to create a ticket"
     ):
         """Setup the ticket system"""
         await interaction.response.defer(ephemeral=True)
@@ -62,15 +66,17 @@ class TicketSystem(commands.Cog):
                 "transcript_channel_id": transcript_channel.id,
                 "ticket_category_id": ticket_category.id,
                 "ticket_types": types,
-                "mod_roles": role_ids
+                "mod_roles": role_ids,
+                "panel_title": panel_title,
+                "panel_description": panel_description
             }},
             upsert=True
         )
 
-        # Create panel
+        # Create panel with custom title and description
         embed = discord.Embed(
-            title="Support Tickets",
-            description="Click a button below to create a ticket",
+            title=panel_title,
+            description=panel_description,
             color=discord.Color.blue()
         )
         
