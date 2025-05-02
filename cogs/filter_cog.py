@@ -14,6 +14,11 @@ class MatchType(Enum):
     STARTS_WITH = "starts_with"
     ENDS_WITH = "ends_with"
     REGEX = "regex"
+    
+class PunishmentType(Enum):
+    MUTE = "mute"
+    KICK = "kick"
+    BAN = "ban"
 
 class PaginationView(discord.ui.View):
     def __init__(self, items: List[Dict[str, Any]], match_type: str, 
