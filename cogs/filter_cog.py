@@ -3,7 +3,7 @@ from discord import app_commands
 from discord.ext import commands
 from enum import Enum
 import re
-from typing import Optional
+from typing import Optional, List
 
 class MatchType(Enum):
     CONTAINS = "contains"
@@ -20,7 +20,6 @@ class FilterCog(commands.Cog):
         self.whitelist_cache = {}
 
     async def cog_load(self):
-        # Setup DB
         if hasattr(self.bot, 'db'):
             names = await self.bot.db.list_collection_names()
             if "blacklist" not in names:
@@ -32,10 +31,8 @@ class FilterCog(commands.Cog):
         else:
             print("Warning: Bot database not initialized")
             return
-        # Preload
         for guild in self.bot.guilds:
             await self._load_cache(guild.id)
-        # Sync commands once
         await self.bot.tree.sync()
 
     async def _load_cache(self, guild_id: int):
@@ -59,11 +56,9 @@ class FilterCog(commands.Cog):
         if gid not in self.blacklist_cache:
             await self._load_cache(gid)
         content = message.content.lower()
-        # Whitelist overrides
         for item, mt in self.whitelist_cache.get(gid, {}).items():
             if self._matches(content, item, mt):
                 return
-        # Blacklist
         for item, mt in self.blacklist_cache.get(gid, {}).items():
             if self._matches(content, item, mt):
                 try:
@@ -92,14 +87,10 @@ class FilterCog(commands.Cog):
             return False
         return False
 
-    # Slash Commands
+    # Single-item slash commands
 
     @app_commands.command(name="blacklist", description="Add or update an item in the blacklist")
-    @app_commands.describe(
-        item="The word/phrase/link to blacklist",
-        match_type="Match type (contains, exact, etc.)",
-        reason="Optional reason for blacklisting"
-    )
+    @app_commands.describe(item="The word/phrase/link to blacklist", match_type="Match type", reason="Reason for blacklisting")
     @app_commands.choices(match_type=[
         app_commands.Choice(name="Contains", value=MatchType.CONTAINS.value),
         app_commands.Choice(name="Exact", value=MatchType.EXACT.value),
@@ -108,36 +99,16 @@ class FilterCog(commands.Cog):
         app_commands.Choice(name="Regex", value=MatchType.REGEX.value)
     ])
     @app_commands.default_permissions(manage_messages=True)
-    async def blacklist(
-        self,
-        interaction: discord.Interaction,
-        item: str,
-        match_type: str = MatchType.CONTAINS.value,
-        reason: Optional[str] = None
-    ):
+    async def blacklist(self, interaction: discord.Interaction, item: str, match_type: str = MatchType.CONTAINS.value, reason: Optional[str] = None):
         gid = interaction.guild.id
-        # Remove from whitelist if exists
         await self.whitelist_collection.delete_one({"guild_id": gid, "item": item})
         self.whitelist_cache.get(gid, {}).pop(item, None)
-        # Upsert blacklist
-        await self.blacklist_collection.update_one(
-            {"guild_id": gid, "item": item},
-            {"$set": {"match_type": match_type, "reason": reason,
-                       "added_by": interaction.user.id, "added_at": discord.utils.utcnow().isoformat()}},
-            upsert=True
-        )
+        await self.blacklist_collection.update_one({"guild_id": gid, "item": item}, {"$set": {"match_type": match_type, "reason": reason, "added_by": interaction.user.id, "added_at": discord.utils.utcnow().isoformat()}}, upsert=True)
         self.blacklist_cache.setdefault(gid, {})[item] = match_type
-        await interaction.response.send_message(
-            f"🚫 Blacklisted `{item}` ({match_type})",
-            ephemeral=True
-        )
+        await interaction.response.send_message(f"🚫 Blacklisted `{item}` ({match_type})", ephemeral=True)
 
     @app_commands.command(name="whitelist", description="Add or update an item in the whitelist")
-    @app_commands.describe(
-        item="The word/phrase/link to whitelist",
-        match_type="Match type (contains, exact, etc.)",
-        reason="Optional reason for whitelisting"
-    )
+    @app_commands.describe(item="The word/phrase/link to whitelist", match_type="Match type", reason="Reason for whitelisting")
     @app_commands.choices(match_type=[
         app_commands.Choice(name="Contains", value=MatchType.CONTAINS.value),
         app_commands.Choice(name="Exact", value=MatchType.EXACT.value),
@@ -146,38 +117,67 @@ class FilterCog(commands.Cog):
         app_commands.Choice(name="Regex", value=MatchType.REGEX.value)
     ])
     @app_commands.default_permissions(manage_messages=True)
-    async def whitelist(
-        self,
-        interaction: discord.Interaction,
-        item: str,
-        match_type: str = MatchType.CONTAINS.value,
-        reason: Optional[str] = None
-    ):
+    async def whitelist(self, interaction: discord.Interaction, item: str, match_type: str = MatchType.CONTAINS.value, reason: Optional[str] = None):
         gid = interaction.guild.id
-        # Remove from blacklist if exists
         await self.blacklist_collection.delete_one({"guild_id": gid, "item": item})
         self.blacklist_cache.get(gid, {}).pop(item, None)
-        # Upsert whitelist
-        await self.whitelist_collection.update_one(
-            {"guild_id": gid, "item": item},
-            {"$set": {"match_type": match_type, "reason": reason,
-                       "added_by": interaction.user.id, "added_at": discord.utils.utcnow().isoformat()}},
-            upsert=True
-        )
+        await self.whitelist_collection.update_one({"guild_id": gid, "item": item}, {"$set": {"match_type": match_type, "reason": reason, "added_by": interaction.user.id, "added_at": discord.utils.utcnow().isoformat()}}, upsert=True)
         self.whitelist_cache.setdefault(gid, {})[item] = match_type
-        await interaction.response.send_message(
-            f"✅ Whitelisted `{item}` ({match_type})",
-            ephemeral=True
-        )
+        await interaction.response.send_message(f"✅ Whitelisted `{item}` ({match_type})", ephemeral=True)
+
+    # Bulk slash commands
+
+    @app_commands.command(name="bulk_blacklist", description="Add or update multiple items to the blacklist")
+    @app_commands.describe(items="Comma-separated list of items to blacklist", match_type="Match type for all items", reason="Optional reason applied to all items")
+    @app_commands.choices(match_type=[
+        app_commands.Choice(name="Contains", value=MatchType.CONTAINS.value),
+        app_commands.Choice(name="Exact", value=MatchType.EXACT.value),
+        app_commands.Choice(name="Starts With", value=MatchType.STARTS_WITH.value),
+        app_commands.Choice(name="Ends With", value=MatchType.ENDS_WITH.value),
+        app_commands.Choice(name="Regex", value=MatchType.REGEX.value)
+    ])
+    @app_commands.default_permissions(manage_messages=True)
+    async def bulk_blacklist(self, interaction: discord.Interaction, items: str, match_type: str = MatchType.CONTAINS.value, reason: Optional[str] = None):
+        gid = interaction.guild.id
+        entries = [entry.strip() for entry in items.split(',') if entry.strip()]
+        processed: List[str] = []
+        for item in entries:
+            # Remove from whitelist
+            await self.whitelist_collection.delete_one({"guild_id": gid, "item": item})
+            self.whitelist_cache.get(gid, {}).pop(item, None)
+            # Upsert blacklist
+            await self.blacklist_collection.update_one({"guild_id": gid, "item": item}, {"$set": {"match_type": match_type, "reason": reason, "added_by": interaction.user.id, "added_at": discord.utils.utcnow().isoformat()}}, upsert=True)
+            self.blacklist_cache.setdefault(gid, {})[item] = match_type
+            processed.append(item)
+        await interaction.response.send_message(f"🚫 Bulk blacklisted: {', '.join(processed)} ({match_type})", ephemeral=True)
+
+    @app_commands.command(name="bulk_whitelist", description="Add or update multiple items to the whitelist")
+    @app_commands.describe(items="Comma-separated list of items to whitelist", match_type="Match type for all items", reason="Optional reason applied to all items")
+    @app_commands.choices(match_type=[
+        app_commands.Choice(name="Contains", value=MatchType.CONTAINS.value),
+        app_commands.Choice(name="Exact", value=MatchType.EXACT.value),
+        app_commands.Choice(name="Starts With", value=MatchType.STARTS_WITH.value),
+        app_commands.Choice(name="Ends With", value=MatchType.ENDS_WITH.value),
+        app_commands.Choice(name="Regex", value=MatchType.REGEX.value)
+    ])
+    @app_commands.default_permissions(manage_messages=True)
+    async def bulk_whitelist(self, interaction: discord.Interaction, items: str, match_type: str = MatchType.CONTAINS.value, reason: Optional[str] = None):
+        gid = interaction.guild.id
+        entries = [entry.strip() for entry in items.split(',') if entry.strip()]
+        processed: List[str] = []
+        for item in entries:
+            # Remove from blacklist
+            await self.blacklist_collection.delete_one({"guild_id": gid, "item": item})
+            self.blacklist_cache.get(gid, {}).pop(item, None)
+            # Upsert whitelist
+            await self.whitelist_collection.update_one({"guild_id": gid, "item": item}, {"$set": {"match_type": match_type, "reason": reason, "added_by": interaction.user.id, "added_at": discord.utils.utcnow().isoformat()}}, upsert=True)
+            self.whitelist_cache.setdefault(gid, {})[item] = match_type
+            processed.append(item)
+        await interaction.response.send_message(f"✅ Bulk whitelisted: {', '.join(processed)} ({match_type})", ephemeral=True)
 
     @app_commands.command(name="show_blacklisted", description="Show all blacklisted items")
     @app_commands.default_permissions(manage_messages=True)
-    async def show_blacklisted(
-        self,
-        interaction: discord.Interaction,
-        match_type: str = "all",
-        ephemeral: bool = True
-    ):
+    async def show_blacklisted(self, interaction: discord.Interaction, match_type: str = "all", ephemeral: bool = True):
         gid = interaction.guild.id
         items = await self.blacklist_collection.find({"guild_id": gid}).to_list(length=None)
         if not items:
@@ -190,12 +190,7 @@ class FilterCog(commands.Cog):
 
     @app_commands.command(name="show_whitelisted", description="Show all whitelisted items")
     @app_commands.default_permissions(manage_messages=True)
-    async def show_whitelisted(
-        self,
-        interaction: discord.Interaction,
-        match_type: str = "all",
-        ephemeral: bool = True
-    ):
+    async def show_whitelisted(self, interaction: discord.Interaction, match_type: str = "all", ephemeral: bool = True):
         gid = interaction.guild.id
         items = await self.whitelist_collection.find({"guild_id": gid}).to_list(length=None)
         if not items:
