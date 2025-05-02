@@ -1,3 +1,4 @@
+# cogs/anti_raid.py
 import discord
 from discord.ext import commands
 from discord import app_commands
@@ -126,16 +127,16 @@ class AntiRaidCog(commands.Cog):
                 print(f"AntiRaid Cog: Error in cleanup task: {e}")
                 await asyncio.sleep(60)
     
-    @app_commands.command(name="setup_antiraid", description="Set up the anti-raid protection system for your server")
+    @app_commands.command(name="setupantiraid", description="Set up the anti-raid protection system for your server")
     @app_commands.describe(
         sensitivity="Raid detection sensitivity (0=Off, 1=Low, 2=Medium, 3=High)",
         mod_role="Moderator role to ping (optional)",
         manager_role="Community Manager role to ping (optional)",
         raid_alert_channel="Channel for detailed raid reports (optional)"
     )
-    @app_commands.default_permissions(administrator=True)
     @app_commands.guild_only()
-    async def setup_antiraid(
+    @app_commands.default_permissions(administrator=True)
+    async def setupantiraid(
         self,
         interaction: discord.Interaction,
         sensitivity: int,
@@ -241,10 +242,7 @@ class AntiRaidCog(commands.Cog):
             message += "\nThe system will automatically monitor for raid behavior, delete recent raid messages, and timeout raiders."
             
         # Send response - Fixed: Only use one response method to avoid double messaging
-        if interaction.response.is_done():
-            await interaction.followup.send(message, ephemeral=False)
-        else:
-            await interaction.response.send_message(message, ephemeral=False)
+        await interaction.response.send_message(message, ephemeral=False)
 
     async def detect_intent_with_ai(self, message_content: str) -> Tuple[bool, float]:
         """
