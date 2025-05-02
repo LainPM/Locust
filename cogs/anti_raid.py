@@ -9,7 +9,7 @@ from collections import defaultdict, Counter
 
 class AntiRaidCog(commands.Cog):
     """Anti-Raid system for Discord servers"""
-    
+
     def __init__(self, bot):
         self.bot = bot
         
