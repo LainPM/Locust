@@ -172,12 +172,32 @@ class AntiRaidCog(commands.Cog):
         # If raid_alert_channel is provided, verify and test it
         if raid_alert_channel:
             try:
+                # Check permissions explicitly before attempting to send
+                if not raid_alert_channel.permissions_for(interaction.guild.me).send_messages:
+                    await interaction.response.send_message(
+                        f"Error: I don't have permission to send messages in {raid_alert_channel.mention}. "
+                        f"Please make sure I have the 'Send Messages' permission in that channel.", 
+                        ephemeral=True
+                    )
+                    return
+                
                 # Test if bot can send messages to this channel
                 test_message = await raid_alert_channel.send("Testing anti-raid alert channel... ✅")
                 await test_message.delete()
                 print(f"AntiRaid: Successfully configured alert channel {raid_alert_channel.name} ({raid_alert_channel.id})")
+            except discord.Forbidden:
+                await interaction.response.send_message(
+                    f"Error: I don't have permission to send messages to {raid_alert_channel.mention}. "
+                    f"Please check my permissions in that channel.", 
+                    ephemeral=True
+                )
+                return
             except Exception as e:
-                await interaction.response.send_message(f"Error: I cannot send messages to {raid_alert_channel.mention}. Please check my permissions in that channel.", ephemeral=True)
+                await interaction.response.send_message(
+                    f"Error: I cannot send messages to {raid_alert_channel.mention}. "
+                    f"Error details: {str(e)}", 
+                    ephemeral=True
+                )
                 print(f"AntiRaid: Error testing alert channel: {e}")
                 return
         
@@ -596,9 +616,18 @@ class AntiRaidCog(commands.Cog):
                 
                 # Send detailed alert to the dedicated alert channel if configured
                 raid_alert_channel_id = config.get("raid_alert_channel_id")
-                if raid_alert_channel_id and deleted_messages:
+                # FIXED: Removed dependency on deleted_messages - alert channel should always be notified
+                if raid_alert_channel_id:
+                    print(f"AntiRaid: Attempting to send alert to channel ID {raid_alert_channel_id}")
+                    
                     # Try to find the alert channel directly first
                     alert_channel = guild.get_channel(raid_alert_channel_id)
+                    
+                    # Debug info
+                    if alert_channel:
+                        print(f"AntiRaid: Found alert channel {alert_channel.name} ({alert_channel.id})")
+                    else:
+                        print(f"AntiRaid: Direct channel lookup failed for ID {raid_alert_channel_id}, trying thread lookup")
                     
                     # If not found, try to find as a thread
                     if not alert_channel:
@@ -607,6 +636,7 @@ class AntiRaidCog(commands.Cog):
                                 for thread in channel.threads:
                                     if thread.id == raid_alert_channel_id:
                                         alert_channel = thread
+                                        print(f"AntiRaid: Found alert channel as thread {thread.name} in {channel.name}")
                                         break
                                 if alert_channel:
                                     break
@@ -616,6 +646,13 @@ class AntiRaidCog(commands.Cog):
                     # If alert channel found, send detailed report
                     if alert_channel and isinstance(alert_channel, (discord.TextChannel, discord.Thread)):
                         try:
+                            print(f"AntiRaid: Preparing to send alert to {alert_channel.name}")
+                            
+                            # Test permission check
+                            if not alert_channel.permissions_for(guild.me).send_messages:
+                                print(f"AntiRaid: ERROR - Missing send_messages permission in {alert_channel.name}")
+                                return
+                                
                             # Create a rich embed for the detailed alert
                             embed = discord.Embed(
                                 title=f"Raid Detection: User Timed Out",
@@ -681,16 +718,26 @@ class AntiRaidCog(commands.Cog):
                             embed.set_footer(text=f"Anti-Raid Protection | User ID: {user_id}")
                             
                             # Send the detailed embed to the alert channel
-                            await alert_channel.send(
-                                content=f"**RAID ALERT:** User <@{user_id}> has been detected as a potential raider.",
-                                embed=embed
-                            )
-                            print(f"AntiRaid: Sent detailed alert to channel {alert_channel.name}")
-                        except Exception as e:
-                            print(f"AntiRaid: Error sending detailed alert: {e}")
-                            print(f"Error details: {str(e)}")
+                            try:
+                                alert_message = await alert_channel.send(
+                                    content=f"**RAID ALERT:** User <@{user_id}> has been detected as a potential raider.",
+                                    embed=embed
+                                )
+                                print(f"AntiRaid: Successfully sent detailed alert to channel {alert_channel.name}")
+                                # Optional - add a reaction to confirm the message was sent
+                                try:
+                                    await alert_message.add_reaction("✅")
+                                except:
+                                    pass  # It's ok if this fails
+                            except discord.Forbidden:
+                                print(f"AntiRaid: ERROR - No permission to send messages to {alert_channel.name}")
+                            except discord.HTTPException as he:
+                                print(f"AntiRaid: HTTP error sending alert: {he.status} - {he.text}")
+                            except Exception as e:
+                                print(f"AntiRaid: Error sending detailed alert: {e}")
+                                print(f"Error details: {str(e)}")
                     else:
-                        print(f"AntiRaid: Alert channel {raid_alert_channel_id} not found or not a text channel")
+                        print(f"AntiRaid: Alert channel {raid_alert_channel_id} not found or not a text channel. Guild has {len(guild.text_channels)} text channels")
                 
                 # Reset the user's raid score
                 self.user_raid_score[user_id] = 0
