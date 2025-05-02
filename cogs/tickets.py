@@ -237,16 +237,16 @@ class TicketActionView(ui.View):
     def __init__(self, bot):
         super().__init__(timeout=None)
         self.bot = bot
-        
+
         # Add action buttons
         transcript_btn = ui.Button(
             label="Transcript",
             style=discord.ButtonStyle.primary,
             custom_id="ticket:transcript",
-            emoji="📝"
+            emoji="🗒️"
         )
         transcript_btn.callback = self.create_transcript
-        
+
         reopen_btn = ui.Button(
             label="Reopen",
             style=discord.ButtonStyle.success,
@@ -254,7 +254,7 @@ class TicketActionView(ui.View):
             emoji="🔓"
         )
         reopen_btn.callback = self.reopen_ticket
-        
+
         delete_btn = ui.Button(
             label="Delete",
             style=discord.ButtonStyle.danger,
@@ -262,110 +262,28 @@ class TicketActionView(ui.View):
             emoji="🗑️"
         )
         delete_btn.callback = self.delete_ticket
-        
+
         self.add_item(transcript_btn)
         self.add_item(reopen_btn)
         self.add_item(delete_btn)
-    
-    async def create_transcript(self, interaction: discord.Interaction):
-        """Generate a transcript"""
-        await interaction.response.defer(ephemeral=True)
-        
-        cog = self.bot.get_cog("TicketSystem")
-        channel = interaction.channel
-        guild_id = interaction.guild.id
-        
-        # Get ticket and config
-        ticket = await cog.tickets_col.find_one({"guild_id": guild_id, "channel_id": channel.id})
-        config = await cog.config_col.find_one({"guild_id": guild_id})
-        
-        if not ticket or not config:
-            return await interaction.followup.send("Error: Ticket or config not found", ephemeral=True)
-        
-        # Get transcript channel
-        transcript_channel = interaction.guild.get_channel(config["transcript_channel_id"])
-        if not transcript_channel:
-            return await interaction.followup.send("Transcript channel not found", ephemeral=True)
-        
-        try:
-            # Get message history
-            history = [msg async for msg in channel.history(limit=None, oldest_first=True)]
-            
-            # Generate transcript content
-            server_info = f"<Server-Info> Server: {interaction.guild.name} Channel: {channel.name} Messages: {len(history)}"
-            
-            transcript_content = "<Transcript>\n"
-            for msg in history:
-                timestamp = msg.created_at.strftime('%Y-%m-%d %H:%M')
-                author_name = msg.author.name
-                content = msg.content or "[No content]"
-                content = content.replace('<', '&lt;').replace('>', '&gt;')
-                transcript_content += f"[{timestamp}] {author_name}: {content}\n"
-            
-            full_transcript = f"<html><body><pre>{server_info}\n\n{transcript_content}</pre></body></html>"
-            
-            # Save transcript to DB
-            timestamp = datetime.utcnow()
-            await cog.transcripts_col.insert_one({
-                "guild_id": guild_id,
-                "channel_id": channel.id,
-                "case_number": ticket["case_number"],
-                "timestamp": timestamp,
-                "generated_by": interaction.user.id
-            })
-            
-            # Create file and send
-            data = io.BytesIO(full_transcript.encode('utf-8'))
-            filename = f"ticket-{ticket['case_number']}-{channel.name}.html"
-            
-            embed = discord.Embed(
-                title=f"Ticket Transcript: Case #{ticket['case_number']}",
-                description=f"Transcript for ticket {channel.mention}",
-                color=discord.Color.blue()
-            )
-            
-            file = discord.File(data, filename=filename)
-            transcript_msg = await transcript_channel.send(embed=embed, file=file)
-            
-            # Add view button if URL available
-            if transcript_msg.attachments:
-                url = transcript_msg.attachments[0].url
-                
-                view = discord.ui.View()
-                view.add_item(discord.ui.Button(
-                    label="View Transcript",
-                    style=discord.ButtonStyle.link,
-                    url=url
-                ))
-                
-                await transcript_msg.edit(view=view)
-                await interaction.followup.send(
-                    f"Transcript sent to {transcript_channel.mention}\n[View Transcript]({url})",
-                    ephemeral=True
-                )
-            else:
-                await interaction.followup.send(
-                    f"Transcript sent to {transcript_channel.mention}",
-                    ephemeral=True
-                )
-        
-        except Exception as e:
-            await interaction.followup.send(f"Error generating transcript: {e}", ephemeral=True)
-    
+
     async def reopen_ticket(self, interaction: discord.Interaction):
         """Reopen a ticket"""
         await interaction.response.defer(ephemeral=False)
-        
+
         cog = self.bot.get_cog("TicketSystem")
         channel = interaction.channel
         guild_id = interaction.guild.id
-        
+
         # Get ticket data
         ticket = await cog.tickets_col.find_one({"guild_id": guild_id, "channel_id": channel.id})
         if not ticket:
             return await interaction.followup.send("This is not a ticket channel!", ephemeral=True)
-        
-        # Update ticket - explicitly reset all closed-related fields
+
+        if ticket["status"] == "open":
+            return await interaction.followup.send("This ticket is already open!", ephemeral=True)
+
+        # Update ticket
         timestamp = datetime.utcnow()
         await cog.tickets_col.update_one(
             {"guild_id": guild_id, "channel_id": channel.id},
@@ -373,42 +291,43 @@ class TicketActionView(ui.View):
                 "status": "open",
                 "reopened_at": timestamp,
                 "reopened_by": interaction.user.id,
-                "closed_at": None,  # Reset closed timestamp
-                "closed_by": None   # Reset closed_by user ID
+                "closed_at": None,
+                "closed_by": None
             }}
         )
-        
-        # Rename channel
-        try:
+
+        # Rename channel if it was marked closed
+        if "-closed" in channel.name:
             new_name = channel.name.replace("-closed", "")
-            await channel.edit(name=new_name)
-        except:
-            pass
-        
+            try:
+                await channel.edit(name=new_name)
+            except Exception as e:
+                print(f"Failed to rename ticket channel: {e}")
+                return await interaction.followup.send("Ticket status was updated, but the channel name couldn't be changed.", ephemeral=True)
+
         # Restore user permissions
         try:
             creator = interaction.guild.get_member(ticket["user_id"])
             if creator:
                 await channel.set_permissions(creator, view_channel=True, send_messages=True)
-        except:
-            pass
-        
+        except Exception as e:
+            print(f"Failed to restore user permissions: {e}")
+
         # Send reopened message
         embed = discord.Embed(
             title=f"Ticket {ticket['case_number']}: {ticket['ticket_type']}",
             description=f"This ticket has been reopened by {interaction.user.mention}",
             color=discord.Color.green()
         )
-        
+
         # Add management view back
         view = TicketManagementView(self.bot)
-        
-        # Remove action view from message that triggered this
+
         try:
             await interaction.message.edit(view=None)
-        except:
-            pass
-        
+        except Exception as e:
+            print(f"Failed to remove old view: {e}")
+
         await interaction.followup.send(embed=embed, view=view)
     
     async def delete_ticket(self, interaction: discord.Interaction):
