@@ -247,13 +247,13 @@ class AntiRaidCog(commands.Cog):
         # Get guild and config
         guild = self.bot.get_guild(guild_id)
         if not guild:
-            return False
+            return False, []
             
         # Get member
         try:
             member = await guild.fetch_member(user_id)
             if not member:
-                return False
+                return False, []
             
             # Set timeout for the specified duration
             timeout_duration = datetime.timedelta(minutes=duration_minutes)
@@ -263,44 +263,73 @@ class AntiRaidCog(commands.Cog):
             unmute_time = datetime.datetime.utcnow() + timeout_duration
             self.muted_users[user_id] = unmute_time
             
-            # Delete recent messages from this user (up to 500 messages from the past 24 hours)
-            deleted_count = 0
-            deleted_messages = []  # Store messageID-channelID pairs for detailed alerts
+            # Store deleted messages info
+            deleted_messages = []
             
             # Get the last 24 hours cutoff
             cutoff_time = datetime.datetime.utcnow() - datetime.timedelta(hours=24)
             
-            # For each channel in the guild
+            # For each channel in the guild, use more thorough deletion with the Purge functionality
             for channel in guild.text_channels:
                 try:
                     # Check if bot can manage messages in this channel
                     if not channel.permissions_for(guild.me).manage_messages:
                         continue
-                        
-                    # Look through message history, use higher limit (500) for more thorough cleaning
-                    async for message in channel.history(limit=500, after=cutoff_time):
-                        # If message is from the raider
+                    
+                    # Create a check function to match this user's messages
+                    def is_user_message(message):
+                        return message.author.id == user_id
+                    
+                    # Purge messages - more reliable than iterating through history
+                    batch = []
+                    async for message in channel.history(limit=200, after=cutoff_time):
                         if message.author.id == user_id:
-                            try:
-                                # Save message info before deleting
-                                deleted_messages.append({
-                                    "content": message.content,
-                                    "channel_id": channel.id,
-                                    "message_id": message.id,
-                                    "timestamp": message.created_at,
-                                    "jump_url": message.jump_url
-                                })
-                                
-                                # Delete the message
-                                await message.delete()
-                                deleted_count += 1
-                            except Exception as e:
-                                print(f"AntiRaid: Error deleting message: {e}")
+                            # Store message info before deletion
+                            deleted_messages.append({
+                                "content": message.content,
+                                "channel_id": channel.id,
+                                "message_id": message.id,
+                                "timestamp": message.created_at,
+                                "jump_url": message.jump_url
+                            })
+                            batch.append(message)
+                            
+                            # Delete in batches of 100 (Discord's bulk delete limit)
+                            if len(batch) >= 100:
+                                try:
+                                    await channel.delete_messages(batch)
+                                    batch = []
+                                except Exception as e:
+                                    print(f"AntiRaid: Error bulk deleting messages: {e}")
+                                    # If bulk delete fails, try individual deletion
+                                    for msg in batch:
+                                        try:
+                                            await msg.delete()
+                                        except Exception as e2:
+                                            print(f"AntiRaid: Error deleting individual message: {e2}")
+                                    batch = []
+                    
+                    # Delete any remaining messages in the batch
+                    if batch:
+                        try:
+                            if len(batch) > 1:
+                                await channel.delete_messages(batch)
+                            else:
+                                await batch[0].delete()
+                        except Exception as e:
+                            print(f"AntiRaid: Error deleting final batch: {e}")
+                            # Try individual deletion if bulk fails
+                            for msg in batch:
+                                try:
+                                    await msg.delete()
+                                except Exception:
+                                    pass
+                    
                 except Exception as e:
-                    print(f"AntiRaid: Error checking channel {channel.name}: {e}")
+                    print(f"AntiRaid: Error purging messages in channel {channel.name}: {e}")
             
-            print(f"AntiRaid: Muted user {user_id} for {duration_minutes} minutes and deleted {deleted_count} messages")
-            return True, deleted_messages  # Return success and the list of deleted messages
+            print(f"AntiRaid: Muted user {user_id} for {duration_minutes} minutes and deleted {len(deleted_messages)} messages")
+            return True, deleted_messages
             
         except Exception as e:
             print(f"AntiRaid: Error muting user {user_id}: {e}")
@@ -485,42 +514,46 @@ class AntiRaidCog(commands.Cog):
         
         # If score exceeds mute threshold, take action
         if total_score >= mute_threshold:
-            # Determine mute duration based on sensitivity and severity
-            # For low sensitivity:
-            #   - Default: 5 minutes
-            #   - If AI confirmed malicious: Up to 60 minutes (1 hour)
-            # For medium sensitivity:
-            #   - Default: 15 minutes
-            #   - Severe: Up to 6 hours
-            # For high sensitivity:
-            #   - Default: 60 minutes (1 hour)
-            #   - Severe: Up to 24 hours
+            # Determine mute duration based on sensitivity, AI involvement, and severity
             
-            is_severe = total_score >= mute_threshold * 1.5
+            # Calculate severity on a scale of 0-1
+            severity = min(1.0, (total_score - mute_threshold) / (mute_threshold * 0.5))
+            
+            # Determine if AI confirmed malicious intent
+            ai_confirmed = self.ai_checks_performed.get(user_id, 0) > 0
             
             # Get base duration based on sensitivity
             base_duration_minutes = {1: 5, 2: 15, 3: 60}[sensitivity]
             
-            # Determine AI involvement
-            ai_confirmed = self.ai_checks_performed.get(user_id, 0) > 0 and is_severe
+            # Set maximum durations based on sensitivity
+            max_duration_minutes = {1: 60, 2: 360, 3: 1440}[sensitivity]  # 1h, 6h, 24h
             
-            # For low sensitivity, check if AI determined it was malicious
-            if sensitivity == 1:
+            # Calculate duration more dynamically based on severity and AI confirmation
+            if sensitivity == 1:  # Low sensitivity
                 if ai_confirmed:
-                    duration_minutes = 60  # Max 1 hour for low sensitivity with AI confirmation
-                    alert_level = "CONFIRMED"
+                    # AI confirmed - scale between 10 and 60 minutes
+                    duration_minutes = int(10 + severity * 50)
                 else:
-                    duration_minutes = base_duration_minutes
-                    alert_level = "POTENTIAL"
+                    # No AI confirmation - scale between 5 and 30 minutes
+                    duration_minutes = int(base_duration_minutes + severity * 25)
+            elif sensitivity == 2:  # Medium sensitivity
+                if ai_confirmed or severity > 0.5:
+                    # AI confirmed or high severity - scale between 30 and 360 minutes
+                    duration_minutes = int(30 + severity * 330)
+                else:
+                    # No AI confirmation - scale between 15 and 120 minutes
+                    duration_minutes = int(base_duration_minutes + severity * 105)
+            else:  # High sensitivity
+                # Scale between 60 and 1440 minutes (1 hour to 24 hours)
+                duration_minutes = int(base_duration_minutes + severity * (max_duration_minutes - base_duration_minutes))
+            
+            # Set alert level based on duration and severity
+            if duration_minutes >= max_duration_minutes * 0.75:
+                alert_level = "SEVERE"
+            elif duration_minutes >= max_duration_minutes * 0.4 or ai_confirmed:
+                alert_level = "CONFIRMED"
             else:
-                # For medium/high sensitivity
-                if is_severe:
-                    # Severe cases get longer durations
-                    duration_minutes = {2: 360, 3: 1440}[sensitivity]  # 6 hours for medium, 24 hours for high
-                    alert_level = "SEVERE"
-                else:
-                    duration_minutes = base_duration_minutes
-                    alert_level = "POTENTIAL"
+                alert_level = "POTENTIAL"
             
             # Try to delete the current triggering message
             try:
@@ -552,10 +585,10 @@ class AntiRaidCog(commands.Cog):
                     if sensitivity == 3:
                         ping_manager = True
                     # Medium sensitivity: Ping manager only if AI extended the timeout
-                    elif sensitivity == 2 and is_severe:
+                    elif sensitivity == 2 and (ai_confirmed or severity > 0.5):
                         ping_manager = True
                     # Low sensitivity: Ping manager only if max timeout (1 hour)
-                    elif sensitivity == 1 and duration_minutes >= 60:
+                    elif sensitivity == 1 and duration_minutes >= 45:  # Ping managers if close to max timeout
                         ping_manager = True
                         
                     if ping_manager:
@@ -589,8 +622,20 @@ class AntiRaidCog(commands.Cog):
                 
                 # If we have a dedicated raid alert channel, send detailed info there
                 if config.get("raid_alert_channel_id") and deleted_messages:
+                    alert_channel = None
                     try:
                         alert_channel = guild.get_channel(config["raid_alert_channel_id"])
+                        
+                        # If not found as a regular channel, try to find as a thread
+                        if not alert_channel:
+                            for channel in guild.text_channels:
+                                for thread in channel.threads:
+                                    if thread.id == config["raid_alert_channel_id"]:
+                                        alert_channel = thread
+                                        break
+                                if alert_channel:
+                                    break
+                        
                         if alert_channel:
                             # Create detailed alert with message previews
                             detailed_alert = f"⚠️ **DETAILED {alert_level} RAID ALERT** ⚠️\n\n"
@@ -620,10 +665,14 @@ class AntiRaidCog(commands.Cog):
                                     
                                 detailed_alert += f"```\n{content}\n```\n"
                             
-                            # Send detailed alert
+                            # Send detailed alert to the dedicated channel
                             await alert_channel.send(detailed_alert)
+                            print(f"AntiRaid: Sent detailed alert to channel {alert_channel.name}")
                     except Exception as e:
                         print(f"AntiRaid: Error sending detailed alert: {e}")
+                        # If we failed to send to the alert channel, try to send to the original channel
+                        if not alert_channel:
+                            print(f"AntiRaid: Alert channel {config['raid_alert_channel_id']} not found")
                 
                 # Reset the user's raid score
                 self.user_raid_score[user_id] = 0
