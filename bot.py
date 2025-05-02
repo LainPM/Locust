@@ -4,6 +4,7 @@ import asyncio
 import datetime
 import hashlib
 import json
+import traceback
 from discord.ext import commands
 from discord import app_commands
 from dotenv import load_dotenv
@@ -41,12 +42,36 @@ class MyBot(commands.Bot):
         self.db = self.mongo_client["discord_bot"]
         self.warnings_collection = self.db["warnings"]
         
-        # Currently syncing flag
-        self.currently_syncing = False
+        # Currently syncing flag with timestamp
+        self.sync_start_time = None
+        self.sync_timeout = 600  # 10 minutes max for a sync operation
         
         # Cache for registered commands
         self.registered_commands = []
         self.last_command_fetch = None
+        
+    @property
+    def currently_syncing(self):
+        """Check if sync is in progress, with timeout protection"""
+        if self.sync_start_time is None:
+            return False
+        
+        # Check if sync has been running too long (timeout)
+        elapsed = (datetime.datetime.now() - self.sync_start_time).total_seconds()
+        if elapsed > self.sync_timeout:
+            print(f"⚠️ Sync operation timed out after {elapsed:.1f} seconds")
+            self.sync_start_time = None  # Auto-reset
+            return False
+            
+        return True
+        
+    def start_sync(self):
+        """Mark sync as started with timestamp"""
+        self.sync_start_time = datetime.datetime.now()
+        
+    def end_sync(self):
+        """Mark sync as complete"""
+        self.sync_start_time = None
         
     async def setup_hook(self):
         # Auto-load all cogs from the cogs directory
@@ -125,7 +150,7 @@ class MyBot(commands.Bot):
                 pass
     
     async def sync_direct(self, command_data, guild_id=None):
-        """Sync a command directly using Discord's API"""
+        """Sync a command directly using Discord's API with better error handling"""
         try:
             # Get application ID
             application_id = self.application.id
@@ -148,7 +173,21 @@ class MyBot(commands.Bot):
             
             result = await self.http.request(route, json=command_data)
             return True, result
+        except discord.HTTPException as e:
+            # Properly handle rate limits and other HTTP errors
+            if e.status == 429:
+                print(f"Rate limited syncing command: {command_data.get('name', 'unknown')}")
+                print(f"Retry After: {e.retry_after} seconds")
+                print(f"Headers: {e.response.headers if hasattr(e, 'response') else 'No headers'}")
+            else:
+                print(f"HTTP error syncing command: {e}")
+                print(f"Status: {e.status}")
+                print(f"Code: {e.code if hasattr(e, 'code') else 'No code'}")
+                
+            return False, e
         except Exception as e:
+            print(f"Unexpected error syncing command: {e}")
+            print(traceback.format_exc())
             return False, e
     
     async def get_registered_commands(self, force_refresh=False):
@@ -177,9 +216,14 @@ class MyBot(commands.Bot):
             self.last_command_fetch = now
             
             return registered_commands
+        except discord.HTTPException as e:
+            print(f"HTTP error fetching registered commands: {e}")
+            # Return cached results if available
+            return self.registered_commands if self.registered_commands else []
         except Exception as e:
-            print(f"Error fetching registered commands: {e}")
-            return []
+            print(f"Unexpected error fetching registered commands: {e}")
+            print(traceback.format_exc())
+            return self.registered_commands if self.registered_commands else []
     
     def get_command_json(self, command):
         """Extract JSON data from a command"""
@@ -261,6 +305,16 @@ async def sync_status(ctx):
             color=discord.Color.blue()
         )
         
+        # Show sync operation status
+        if bot.currently_syncing:
+            elapsed = (datetime.datetime.now() - bot.sync_start_time).total_seconds()
+            embed.add_field(
+                name="Sync Operation", 
+                value=f"⚠️ **Sync in progress** for {elapsed:.1f} seconds\n"
+                      f"Use `!sync_reset` to clear if stuck",
+                inline=False
+            )
+        
         # Display sync status summary
         embed.add_field(
             name="Command Status", 
@@ -286,7 +340,8 @@ async def sync_status(ctx):
             name="Sync Commands", 
             value="- `!sync_one <name>`: Sync a single command by name\n"
                   "- `!sync_all`: Sync all non-synced commands\n"
-                  "- `!sync_status`: Show this status",
+                  "- `!sync_status`: Show this status\n"
+                  "- `!sync_reset`: Reset sync status if stuck",
             inline=False
         )
         
@@ -301,6 +356,8 @@ async def sync_status(ctx):
             except:
                 pass
     except Exception as e:
+        print(f"Error in sync_status: {e}")
+        print(traceback.format_exc())
         await status_message.edit(content=f"Error checking sync status: {e}")
         
         if ctx.guild:
@@ -313,10 +370,33 @@ async def sync_status(ctx):
 
 @bot.command()
 @commands.is_owner()
+async def sync_reset(ctx):
+    """Force reset the sync status if it gets stuck"""
+    old_status = bot.currently_syncing
+    
+    if bot.sync_start_time:
+        elapsed = (datetime.datetime.now() - bot.sync_start_time).total_seconds()
+        message = await ctx.send(f"Resetting sync status. Sync was in progress for {elapsed:.1f} seconds.")
+        bot.end_sync()
+    else:
+        message = await ctx.send("Sync was not in progress. No action needed.")
+    
+    # Delete message after 5 seconds if in a guild
+    if ctx.guild:
+        try:
+            await asyncio.sleep(5)
+            await message.delete()
+            await ctx.message.delete()
+        except:
+            pass
+
+@bot.command()
+@commands.is_owner()
 async def sync_one(ctx, command_name: str):
     """Sync a single command by name using direct HTTP API"""
     if bot.currently_syncing:
-        message = await ctx.send("A sync operation is already in progress.")
+        elapsed = (datetime.datetime.now() - bot.sync_start_time).total_seconds()
+        message = await ctx.send(f"A sync operation is already in progress for {elapsed:.1f} seconds. Use `!sync_reset` if it's stuck.")
         if ctx.guild:
             try:
                 await asyncio.sleep(5)
@@ -326,7 +406,7 @@ async def sync_one(ctx, command_name: str):
                 pass
         return
         
-    bot.currently_syncing = True
+    bot.start_sync()  # Mark sync as started
     
     try:
         # Find the command
@@ -345,7 +425,7 @@ async def sync_one(ctx, command_name: str):
                     await ctx.message.delete()
                 except:
                     pass
-            bot.currently_syncing = False
+            bot.end_sync()  # Mark sync as complete
             return
         
         status_message = await ctx.send(f"Syncing command '/{command.name}'...")
@@ -363,7 +443,7 @@ async def sync_one(ctx, command_name: str):
                     await ctx.message.delete()
                 except:
                     pass
-            bot.currently_syncing = False
+            bot.end_sync()  # Mark sync as complete
             return
         
         # Get command data
@@ -393,6 +473,8 @@ async def sync_one(ctx, command_name: str):
             except:
                 pass
     except Exception as e:
+        print(f"Error in sync_one: {e}")
+        print(traceback.format_exc())
         error_message = await ctx.send(f"Unexpected error: {e}")
         if ctx.guild:
             try:
@@ -402,14 +484,15 @@ async def sync_one(ctx, command_name: str):
             except:
                 pass
     finally:
-        bot.currently_syncing = False
+        bot.end_sync()  # Always mark sync as complete, even if there was an error
 
 @bot.command()
 @commands.is_owner()
 async def sync_all(ctx):
     """Sync only commands that aren't already synced"""
     if bot.currently_syncing:
-        message = await ctx.send("A sync operation is already in progress.")
+        elapsed = (datetime.datetime.now() - bot.sync_start_time).total_seconds()
+        message = await ctx.send(f"A sync operation is already in progress for {elapsed:.1f} seconds. Use `!sync_reset` if it's stuck.")
         if ctx.guild:
             try:
                 await asyncio.sleep(5)
@@ -419,7 +502,7 @@ async def sync_all(ctx):
                 pass
         return
         
-    bot.currently_syncing = True
+    bot.start_sync()  # Mark sync as started
     
     try:
         # First, get all commands that need syncing
@@ -443,7 +526,7 @@ async def sync_all(ctx):
                     await ctx.message.delete()
                 except:
                     pass
-            bot.currently_syncing = False
+            bot.end_sync()  # Mark sync as complete
             return
         
         status_message = await ctx.send(f"Found {total} commands that need syncing. This will sync them one by one with 10-second delays between each. Continue? (yes/no)")
@@ -464,7 +547,7 @@ async def sync_all(ctx):
                         await response.delete()
                     except:
                         pass
-                bot.currently_syncing = False
+                bot.end_sync()  # Mark sync as complete
                 return
                 
             # Try to delete the response message
@@ -483,7 +566,7 @@ async def sync_all(ctx):
                     await ctx.message.delete()
                 except:
                     pass
-            bot.currently_syncing = False
+            bot.end_sync()  # Mark sync as complete
             return
         
         # Start time for progress tracking
@@ -493,6 +576,7 @@ async def sync_all(ctx):
         
         success_count = 0
         error_count = 0
+        rate_limited = False
         
         for i, command in enumerate(commands_to_sync):
             try:
@@ -501,12 +585,16 @@ async def sync_all(ctx):
                 estimated_total = (elapsed / (i + 1)) * total if i > 0 else 0
                 remaining = max(0, estimated_total - elapsed)
                 
-                await status_message.edit(
-                    content=f"Syncing command {i+1}/{total}: `/{command.name}`\n"
-                            f"Progress: {((i+1)/total)*100:.1f}%\n"
-                            f"Elapsed: {int(elapsed//60)}m {int(elapsed%60)}s | "
-                            f"Remaining: ~{int(remaining//60)}m {int(remaining%60)}s"
-                )
+                status_text = f"Syncing command {i+1}/{total}: `/{command.name}`\n"
+                status_text += f"Progress: {((i+1)/total)*100:.1f}%\n"
+                status_text += f"Elapsed: {int(elapsed//60)}m {int(elapsed%60)}s | "
+                status_text += f"Remaining: ~{int(remaining//60)}m {int(remaining%60)}s"
+                
+                if rate_limited:
+                    status_text += "\n⚠️ Rate limited on previous command. Proceeding with caution."
+                    rate_limited = False
+                
+                await status_message.edit(content=status_text)
                 
                 # Get command data and sync
                 command_data = bot.get_command_json(command)
@@ -518,6 +606,7 @@ async def sync_all(ctx):
                     if isinstance(result, discord.HTTPException) and result.status == 429:
                         # Rate limited, wait longer
                         retry_after = result.retry_after * 1.5  # Add buffer
+                        rate_limited = True
                         
                         await status_message.edit(
                             content=f"⏱️ Rate limited on command {i+1}/{total}: `/{command.name}`\n"
@@ -556,6 +645,8 @@ async def sync_all(ctx):
                 
             except Exception as e:
                 error_count += 1
+                print(f"Error syncing command {command.name}: {e}")
+                print(traceback.format_exc())
                 error_message = await ctx.send(f"Unexpected error during sync for /{command.name}: {e}")
                 if ctx.guild:
                     try:
@@ -588,6 +679,8 @@ async def sync_all(ctx):
                 pass
         
     except Exception as e:
+        print(f"Error in sync_all: {e}")
+        print(traceback.format_exc())
         error_message = await ctx.send(f"Error during sync: {e}")
         if ctx.guild:
             try:
@@ -597,7 +690,7 @@ async def sync_all(ctx):
             except:
                 pass
     finally:
-        bot.currently_syncing = False
+        bot.end_sync()  # Always mark sync as complete, even if there was an error
 
 @bot.event
 async def on_ready():
@@ -610,6 +703,9 @@ async def on_ready():
     ))
     
     print("⚠️ AUTO-SYNC IS DISABLED: Use !sync_status to check which commands need syncing")
+    
+    # Reset sync status in case bot was restarted during sync
+    bot.end_sync()
     
     # Pre-fetch registered commands in the background
     try:
