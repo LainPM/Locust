@@ -225,11 +225,8 @@ class AntiRaidCog(commands.Cog):
             
             message += "\nThe system will automatically monitor for raid behavior, delete recent raid messages, and timeout raiders."
             
-        # Send response
-        if interaction.response.is_done():
-            await interaction.followup.send(message, ephemeral=False)
-        else:
-            await interaction.response.send_message(message, ephemeral=False)
+        # Send response - only use one response method
+        await interaction.response.send_message(message, ephemeral=False)
         
         # Send response
         if interaction.response.is_done():
@@ -569,7 +566,7 @@ class AntiRaidCog(commands.Cog):
                 # Get ping roles - prioritize mod_role
                 ping_mentions = []
                 
-                # Always include mod_role (required)
+                # Include roles if configured
                 if config.get("mod_role_id"):
                     ping_mentions.append(f"<@&{config['mod_role_id']}>")
                 
@@ -593,63 +590,107 @@ class AntiRaidCog(commands.Cog):
                 # Create a very concise alert for the main channel
                 alert = f"⚠️ Raider <@{user_id}> timed out for {duration_minutes}m, deleted {len(deleted_messages)} msgs. {' '.join(ping_mentions)}"
                 
-                # Try to send concise alert to the channel
+                # Try to send concise alert to the channel (with auto-delete after 15 seconds)
                 try:
-                    await message.channel.send(alert)
+                    await message.channel.send(alert, delete_after=15)
                 except Exception as e:
                     print(f"AntiRaid: Error sending alert: {e}")
                 
-                # Send detailed alert to the dedicated alert channel
+                # Send detailed alert to the dedicated alert channel if configured
                 raid_alert_channel_id = config.get("raid_alert_channel_id")
                 if raid_alert_channel_id and deleted_messages:
-                    # Attempt to find the alert channel
+                    # Try to find the alert channel directly first
                     alert_channel = guild.get_channel(raid_alert_channel_id)
                     
-                    # If found, send detailed report
+                    # If not found, try to find as a thread
+                    if not alert_channel:
+                        for channel in guild.text_channels:
+                            try:
+                                for thread in channel.threads:
+                                    if thread.id == raid_alert_channel_id:
+                                        alert_channel = thread
+                                        break
+                                if alert_channel:
+                                    break
+                            except AttributeError:
+                                pass  # Not all channels have threads
+                    
+                    # If alert channel found, send detailed report
                     if alert_channel and isinstance(alert_channel, (discord.TextChannel, discord.Thread)):
                         try:
-                            # Create detailed alert with message previews
+                            # Create a rich embed for the detailed alert
                             embed = discord.Embed(
-                                title=f"Raid Alert: User Timed Out",
-                                description=f"User <@{user_id}> has been timed out for {duration_minutes} minutes.",
+                                title=f"Raid Detection: User Timed Out",
+                                description=f"User <@{user_id}> (ID: {user_id}) has been timed out for {duration_minutes} minutes.",
                                 color=discord.Color.red(),
                                 timestamp=datetime.datetime.utcnow()
                             )
                             
+                            # Add basic info fields
                             embed.add_field(name="Detection Score", value=f"{total_score}/{mute_threshold}", inline=True)
-                            embed.add_field(name="Sensitivity", value=f"Level {sensitivity}", inline=True)
-                            embed.add_field(name="Messages Deleted", value=str(len(deleted_messages)), inline=True)
+                            embed.add_field(name="Sensitivity Level", value=f"{sensitivity}", inline=True)
+                            embed.add_field(name="Timeout Duration", value=f"{duration_minutes} minutes", inline=True)
                             embed.add_field(name="Detection Channel", value=message.channel.mention, inline=True)
+                            embed.add_field(name="Messages Deleted", value=f"{len(deleted_messages)}", inline=True)
+                            embed.add_field(name="Detection Time", value=f"<t:{int(now.timestamp())}:F>", inline=True)
                             
-                            # Add the most recent message content
-                            if deleted_messages:
-                                # Sort messages by timestamp (newest first)
-                                sorted_messages = sorted(deleted_messages, key=lambda x: x["timestamp"], reverse=True)
+                            # Find unique message contents (to avoid showing duplicates)
+                            unique_messages = []
+                            unique_contents = set()
+                            
+                            # Sort messages by timestamp (newest first)
+                            sorted_messages = sorted(deleted_messages, key=lambda x: x["timestamp"], reverse=True)
+                            
+                            # Filter for unique messages only
+                            for msg in sorted_messages:
+                                content = msg["content"]
+                                # Use a simplified version for uniqueness check
+                                simplified = content.strip().lower()[:50]
+                                if simplified not in unique_contents:
+                                    unique_contents.add(simplified)
+                                    unique_messages.append(msg)
+                                    # Only keep up to 3 unique messages
+                                    if len(unique_messages) >= 3:
+                                        break
+                            
+                            # Add message samples field (make it large and obvious)
+                            if unique_messages:
+                                embed.add_field(
+                                    name="__Message Samples__", 
+                                    value="The following are examples of messages that triggered the raid detection:", 
+                                    inline=False
+                                )
                                 
-                                # Show up to 3 most recent messages
-                                for i, msg in enumerate(sorted_messages[:3]):
+                                # Add each unique message as its own field for better visibility
+                                for i, msg in enumerate(unique_messages):
                                     channel = guild.get_channel(msg["channel_id"])
-                                    channel_mention = channel.mention if channel else f"<#{msg['channel_id']}>"
+                                    channel_name = channel.name if channel else f"Unknown ({msg['channel_id']})"
                                     
-                                    # Format the message
+                                    # Format the message content
                                     content = msg["content"]
-                                    if len(content) > 400:
-                                        content = content[:397] + "..."
-                                        
+                                    if len(content) > 1024:  # Discord embed field value limit
+                                        content = content[:1020] + "..."
+                                    
+                                    jump_link = f"[Link to message]({msg['jump_url']})"
+                                    
                                     embed.add_field(
-                                        name=f"Message {i+1} in {channel_mention}", 
-                                        value=content, 
+                                        name=f"Message {i+1} in #{channel_name}", 
+                                        value=f"{content}\n\n{jump_link}", 
                                         inline=False
                                     )
                             
-                            # Send the embed with additional ping mentions if needed
+                            # Set footer with additional info
+                            embed.set_footer(text=f"Anti-Raid Protection | User ID: {user_id}")
+                            
+                            # Send the detailed embed to the alert channel
                             await alert_channel.send(
-                                content=f"Detailed raid report for <@{user_id}>",
+                                content=f"**RAID ALERT:** User <@{user_id}> has been detected as a potential raider.",
                                 embed=embed
                             )
                             print(f"AntiRaid: Sent detailed alert to channel {alert_channel.name}")
                         except Exception as e:
-                            print(f"AntiRaid: Error sending detailed embed: {e}")
+                            print(f"AntiRaid: Error sending detailed alert: {e}")
+                            print(f"Error details: {str(e)}")
                     else:
                         print(f"AntiRaid: Alert channel {raid_alert_channel_id} not found or not a text channel")
                 
