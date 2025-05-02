@@ -1,4 +1,53 @@
-import os
+async def _perform_reopen(self, interaction):
+        """Actual implementation of reopening a ticket"""
+        # Just delegate to the regular reopen method
+        cog = self.bot.get_cog("TicketSystem")
+        if cog:
+            await cog._reopen_ticket(interaction)
+        else:
+            # Fallback if cog not found
+            await self._reopen_ticket(interaction)class PermanentClosedTicketView(ui.View):
+    """A special view for permanently closed tickets without reopen button"""
+    def __init__(self, bot):
+        super().__init__(timeout=None)
+        self.bot = bot
+        
+        # Generate transcript button with consistent custom ID
+        transcript_btn = ui.Button(
+            label="Generate Transcript",
+            style=discord.ButtonStyle.primary,
+            custom_id="ticket_system:gen_transcript_perm",
+            emoji="📝"
+        )
+        transcript_btn.callback = self._gen_transcript
+        
+        # Delete ticket button with consistent custom ID
+        delete_btn = ui.Button(
+            label="Delete Ticket",
+            style=discord.ButtonStyle.danger,
+            custom_id="ticket_system:delete_ticket_perm",
+            emoji="🗑️"
+        )
+        delete_btn.callback = self._delete_ticket
+        
+        # Note: No reopen button in this view!
+        
+        self.add_item(transcript_btn)
+        self.add_item(delete_btn)
+        
+    async def _gen_transcript(self, interaction: discord.Interaction):
+        """Forward to the regular transcript generation"""
+        # Just use the same transcript generation method from ClosedTicketView
+        cog = self.bot.get_cog("TicketSystem")
+        regular_view = ClosedTicketView(self.bot)
+        await regular_view._gen_transcript(interaction)
+        
+    async def _delete_ticket(self, interaction: discord.Interaction):
+        """Forward to the regular delete method"""
+        # Just use the same delete method from ClosedTicketView
+        cog = self.bot.get_cog("TicketSystem")
+        regular_view = ClosedTicketView(self.bot)
+        await regular_view._delete_ticket(interaction)import os
 import discord
 from discord.ext import commands
 from discord import app_commands, ui
@@ -498,6 +547,40 @@ class ClosedTicketView(ui.View):
         self.add_item(transcript_btn)
         self.add_item(delete_btn)
         self.add_item(reopen_btn)
+    
+    async def _reopen_ticket(self, interaction: discord.Interaction):
+        """Reopen a closed ticket (with limit check)"""
+        # First check if this ticket has already been reopened before
+        channel = interaction.channel
+        guild_id = interaction.guild.id
+        
+        # Check the reopen count
+        try:
+            ticket_data = await self.bot.cogs["TicketSystem"].tickets_col.find_one(
+                {"guild_id": guild_id, "channel_id": channel.id}
+            )
+            
+            # Check if ticket is permanently closed
+            if ticket_data and ticket_data.get("permanent_close", False):
+                await interaction.response.send_message(
+                    "⚠️ **This ticket has already been reopened once and cannot be reopened again.**",
+                    ephemeral=True
+                )
+                return
+                
+            # Check if it's been reopened before
+            if ticket_data and ticket_data.get("reopen_count", 0) > 0:
+                await interaction.response.send_message(
+                    "⚠️ **This ticket has already been reopened once and cannot be reopened again.**",
+                    ephemeral=True
+                )
+                return
+        except Exception as e:
+            print(f"Error checking reopen count: {e}")
+            # Continue to regular reopen, errors will be handled there
+        
+        # Proceed with regular reopen
+        await self._perform_reopen(interaction)
 
     async def _gen_transcript(self, interaction: discord.Interaction):
         """Generate and send ticket transcript"""
