@@ -44,6 +44,10 @@ class MyBot(commands.Bot):
         # Currently syncing flag
         self.currently_syncing = False
         
+        # Cache for registered commands
+        self.registered_commands = []
+        self.last_command_fetch = None
+        
     async def setup_hook(self):
         # Auto-load all cogs from the cogs directory
         print("Loading cogs...")
@@ -58,7 +62,7 @@ class MyBot(commands.Bot):
                     
         print("Cogs loaded successfully.")
         print("⚠️ IMPORTANT: Command syncing is COMPLETELY DISABLED to prevent rate limits.")
-        print("⚠️ Slash commands will not work until manually synced with !sync_one or !sync_all")
+        print("⚠️ Use !sync_status to check which commands need syncing.")
         
     async def process_commands(self, message):
         if message.content.startswith(self.command_prefix):
@@ -147,6 +151,36 @@ class MyBot(commands.Bot):
         except Exception as e:
             return False, e
     
+    async def get_registered_commands(self, force_refresh=False):
+        """Get all commands currently registered with Discord"""
+        now = datetime.datetime.now()
+        
+        # Use cached result if available and recent (within last 5 minutes)
+        if not force_refresh and self.last_command_fetch and (now - self.last_command_fetch).total_seconds() < 300:
+            return self.registered_commands
+        
+        try:
+            # Get application ID
+            application_id = self.application.id
+            
+            # Global commands endpoint
+            route = discord.http.Route(
+                'GET',
+                '/applications/{application_id}/commands',
+                application_id=application_id
+            )
+            
+            registered_commands = await self.http.request(route)
+            
+            # Update cache
+            self.registered_commands = registered_commands
+            self.last_command_fetch = now
+            
+            return registered_commands
+        except Exception as e:
+            print(f"Error fetching registered commands: {e}")
+            return []
+    
     def get_command_json(self, command):
         """Extract JSON data from a command"""
         data = {
@@ -177,6 +211,28 @@ class MyBot(commands.Bot):
             data["options"] = options
         
         return data
+    
+    def is_command_synced(self, command, registered_commands):
+        """Check if a command is already properly synced with Discord"""
+        for reg_cmd in registered_commands:
+            if reg_cmd["name"] == command.name:
+                # Command exists, but we should also check if it needs updating
+                # For simplicity, we'll just check the description and parameter count
+                if reg_cmd["description"] != command.description:
+                    return False
+                
+                # Check parameters
+                cmd_params = getattr(command, 'parameters', [])
+                reg_options = reg_cmd.get("options", [])
+                
+                if len(cmd_params) != len(reg_options):
+                    return False
+                
+                # Command exists and looks similar enough
+                return True
+                
+        # Command doesn't exist
+        return False
 
 # Create bot instance
 bot = MyBot()
@@ -184,44 +240,76 @@ bot = MyBot()
 @bot.command()
 @commands.is_owner()
 async def sync_status(ctx):
-    """Check the current sync status and list available commands"""
-    commands = bot.tree.get_commands()
+    """Check the current sync status and list commands that need syncing"""
+    status_message = await ctx.send("Fetching command status...")
     
-    embed = discord.Embed(
-        title="Command Sync Status",
-        description="⚠️ **AUTO-SYNC IS DISABLED**\nSlash commands won't work until manually synced.",
-        color=discord.Color.blue()
-    )
-    
-    # List available commands
-    command_list = "\n".join([f"- `/{cmd.name}`: {cmd.description}" for cmd in commands[:10]])
-    if len(commands) > 10:
-        command_list += f"\n...and {len(commands) - 10} more"
-    
-    if command_list:
-        embed.add_field(name=f"Available Commands ({len(commands)} total)", value=command_list, inline=False)
-    else:
-        embed.add_field(name="Available Commands", value="No commands available", inline=False)
-    
-    # Available sync commands
-    embed.add_field(
-        name="Sync Commands", 
-        value="- `!sync_one <name>`: Sync a single command by name\n"
-              "- `!sync_all`: Sync all commands (very slow)\n"
-              "- `!sync_status`: Show this status",
-        inline=False
-    )
-    
-    message = await ctx.send(embed=embed)
-    
-    # Delete message after 5 seconds if in a guild
-    if ctx.guild:
-        try:
-            await asyncio.sleep(5)
-            await message.delete()
-            await ctx.message.delete()
-        except:
-            pass
+    try:
+        # Get local commands
+        local_commands = bot.tree.get_commands()
+        
+        # Get registered commands from Discord
+        registered_commands = await bot.get_registered_commands(force_refresh=True)
+        
+        # Determine which commands need syncing
+        unsynced_commands = []
+        for cmd in local_commands:
+            if not bot.is_command_synced(cmd, registered_commands):
+                unsynced_commands.append(cmd)
+        
+        embed = discord.Embed(
+            title="Command Sync Status",
+            color=discord.Color.blue()
+        )
+        
+        # Display sync status summary
+        embed.add_field(
+            name="Command Status", 
+            value=f"🔄 **{len(unsynced_commands)}** commands need syncing\n"
+                  f"✅ **{len(local_commands) - len(unsynced_commands)}** commands already synced\n"
+                  f"📋 **{len(local_commands)}** total local commands\n"
+                  f"📡 **{len(registered_commands)}** registered on Discord",
+            inline=False
+        )
+        
+        # List commands that need syncing
+        if unsynced_commands:
+            command_list = "\n".join([f"- `/{cmd.name}`: {cmd.description}" for cmd in unsynced_commands[:15]])
+            if len(unsynced_commands) > 15:
+                command_list += f"\n...and {len(unsynced_commands) - 15} more"
+            
+            embed.add_field(name=f"Commands Needing Sync ({len(unsynced_commands)} total)", value=command_list, inline=False)
+        else:
+            embed.add_field(name="Commands Needing Sync", value="All commands are in sync! 🎉", inline=False)
+        
+        # Available sync commands
+        embed.add_field(
+            name="Sync Commands", 
+            value="- `!sync_one <name>`: Sync a single command by name\n"
+                  "- `!sync_all`: Sync all non-synced commands\n"
+                  "- `!sync_status`: Show this status",
+            inline=False
+        )
+        
+        await status_message.edit(content=None, embed=embed)
+        
+        # Delete message after 5 seconds if in a guild
+        if ctx.guild:
+            try:
+                await asyncio.sleep(5)
+                await status_message.delete()
+                await ctx.message.delete()
+            except:
+                pass
+    except Exception as e:
+        await status_message.edit(content=f"Error checking sync status: {e}")
+        
+        if ctx.guild:
+            try:
+                await asyncio.sleep(5)
+                await status_message.delete()
+                await ctx.message.delete()
+            except:
+                pass
 
 @bot.command()
 @commands.is_owner()
@@ -262,6 +350,22 @@ async def sync_one(ctx, command_name: str):
         
         status_message = await ctx.send(f"Syncing command '/{command.name}'...")
         
+        # Get registered commands to check if already synced
+        registered_commands = await bot.get_registered_commands()
+        
+        # Check if command is already synced
+        if bot.is_command_synced(command, registered_commands):
+            await status_message.edit(content=f"⚠️ Command '/{command.name}' is already synced. No action needed.")
+            if ctx.guild:
+                try:
+                    await asyncio.sleep(5)
+                    await status_message.delete()
+                    await ctx.message.delete()
+                except:
+                    pass
+            bot.currently_syncing = False
+            return
+        
         # Get command data
         command_data = bot.get_command_json(command)
         
@@ -269,9 +373,16 @@ async def sync_one(ctx, command_name: str):
         success, result = await bot.sync_direct(command_data)
         
         if success:
+            # Force refresh the registered commands cache
+            await bot.get_registered_commands(force_refresh=True)
             await status_message.edit(content=f"✅ Command '/{command.name}' synced successfully!")
         else:
-            await status_message.edit(content=f"❌ Failed to sync command '/{command.name}': {result}")
+            if isinstance(result, discord.HTTPException) and result.status == 429:
+                # Rate limited
+                retry_after = result.retry_after
+                await status_message.edit(content=f"⏱️ Rate limited! Please wait {retry_after:.1f} seconds before trying again.")
+            else:
+                await status_message.edit(content=f"❌ Failed to sync command '/{command.name}': {result}")
         
         # Delete messages after 5 seconds if in a guild
         if ctx.guild:
@@ -296,7 +407,7 @@ async def sync_one(ctx, command_name: str):
 @bot.command()
 @commands.is_owner()
 async def sync_all(ctx):
-    """Sync all commands very slowly to avoid rate limits"""
+    """Sync only commands that aren't already synced"""
     if bot.currently_syncing:
         message = await ctx.send("A sync operation is already in progress.")
         if ctx.guild:
@@ -311,11 +422,20 @@ async def sync_all(ctx):
     bot.currently_syncing = True
     
     try:
-        commands = bot.tree.get_commands()
-        total = len(commands)
+        # First, get all commands that need syncing
+        local_commands = bot.tree.get_commands()
+        registered_commands = await bot.get_registered_commands(force_refresh=True)
+        
+        # Filter for commands that need syncing
+        commands_to_sync = []
+        for cmd in local_commands:
+            if not bot.is_command_synced(cmd, registered_commands):
+                commands_to_sync.append(cmd)
+        
+        total = len(commands_to_sync)
         
         if not total:
-            message = await ctx.send("No commands to sync.")
+            message = await ctx.send("All commands are already synced! Nothing to do.")
             if ctx.guild:
                 try:
                     await asyncio.sleep(5)
@@ -326,7 +446,7 @@ async def sync_all(ctx):
             bot.currently_syncing = False
             return
         
-        status_message = await ctx.send(f"This will sync {total} commands one by one with 10-second delays between each. Continue? (yes/no)")
+        status_message = await ctx.send(f"Found {total} commands that need syncing. This will sync them one by one with 10-second delays between each. Continue? (yes/no)")
         
         def check(m):
             return m.author == ctx.author and m.channel == ctx.channel and m.content.lower() in ["yes", "no"]
@@ -369,12 +489,12 @@ async def sync_all(ctx):
         # Start time for progress tracking
         start_time = asyncio.get_event_loop().time()
         
-        await status_message.edit(content=f"Starting safe sync of {total} commands. This will take approximately {total * 10 / 60:.1f} minutes...")
+        await status_message.edit(content=f"Starting sync of {total} commands. This will take approximately {total * 10 / 60:.1f} minutes...")
         
         success_count = 0
         error_count = 0
         
-        for i, command in enumerate(commands):
+        for i, command in enumerate(commands_to_sync):
             try:
                 # Update progress message
                 elapsed = asyncio.get_event_loop().time() - start_time
@@ -395,13 +515,12 @@ async def sync_all(ctx):
                 if success:
                     success_count += 1
                 else:
-                    error_count += 1
                     if isinstance(result, discord.HTTPException) and result.status == 429:
                         # Rate limited, wait longer
                         retry_after = result.retry_after * 1.5  # Add buffer
                         
                         await status_message.edit(
-                            content=f"Rate limited on command {i+1}/{total}: `/{command.name}`\n"
+                            content=f"⏱️ Rate limited on command {i+1}/{total}: `/{command.name}`\n"
                                     f"Waiting {retry_after:.1f} seconds before continuing..."
                         )
                         
@@ -412,9 +531,18 @@ async def sync_all(ctx):
                         success, retry_result = await bot.sync_direct(command_data)
                         if success:
                             success_count += 1
-                            error_count -= 1  # Correct the count since we succeeded on retry
+                        else:
+                            error_count += 1
+                            error_message = await ctx.send(f"Failed to sync `/{command.name}` after retry: {retry_result}")
+                            if ctx.guild:
+                                try:
+                                    await asyncio.sleep(5)
+                                    await error_message.delete()
+                                except:
+                                    pass
                     else:
                         # Other error
+                        error_count += 1
                         error_message = await ctx.send(f"Error syncing `/{command.name}`: {result}")
                         if ctx.guild:
                             try:
@@ -435,6 +563,9 @@ async def sync_all(ctx):
                         await error_message.delete()
                     except:
                         pass
+        
+        # Force refresh the registered commands cache
+        await bot.get_registered_commands(force_refresh=True)
         
         # Final status
         total_time = asyncio.get_event_loop().time() - start_time
@@ -478,7 +609,14 @@ async def on_ready():
         name="over everything."
     ))
     
-    print("⚠️ AUTO-SYNC IS DISABLED: Slash commands won't work until synced with !sync_one or !sync_all")
+    print("⚠️ AUTO-SYNC IS DISABLED: Use !sync_status to check which commands need syncing")
+    
+    # Pre-fetch registered commands in the background
+    try:
+        await bot.get_registered_commands(force_refresh=True)
+        print(f"✅ Pre-fetched {len(bot.registered_commands)} registered commands from Discord")
+    except:
+        print("❌ Failed to pre-fetch registered commands")
 
 @bot.event
 async def on_message(message):
@@ -499,6 +637,7 @@ async def on_guild_join(guild):
             description="I can help moderate, chat, setup tickets, marketposts, starboards, and much more.",
             color=discord.Color.red()
         )
+        embed.add_field(name="Setup", value="Use `/help` to see some commands to run.", inline=False)
         embed.set_footer(text="For help or issues, contact the bot owner")
         
         try:
