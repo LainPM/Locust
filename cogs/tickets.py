@@ -32,7 +32,8 @@ class TicketSystem(commands.Cog):
         panel_title='Title for the ticket panel embed (optional)',
         panel_description='Description for the ticket panel embed (optional)'
     )
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.guild_only()
+    @app_commands.default_permissions(administrator=True)
     async def setup_ticket_system(
         self, interaction: discord.Interaction,
         ticket_panel: discord.TextChannel,
