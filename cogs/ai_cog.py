@@ -316,22 +316,65 @@ class AICog(commands.Cog):
         response = await self.query_gemini_simple(prompt)
         return "YES" in response.strip().upper()
 
-    async def get_user_message_history(self, channel, user_id, limit=10) -> List[str]:
-        """Get the message history for a specific user in a channel"""
-        messages = []
+    async def get_conversation_context(self, channel, referenced_message, context_size=5) -> List[Dict]:
+        """Get the conversation context around a referenced message
+        
+        Args:
+            channel: The Discord channel
+            referenced_message: The message being replied to
+            context_size: Number of messages to get before and after the referenced message
+            
+        Returns:
+            List of message dictionaries with author, content, and timestamp
+        """
+        context_messages = []
         
         try:
-            # Fetch recent messages from the channel
-            async for message in channel.history(limit=100):  # Fetch more than needed to filter
-                # Only include messages from the specified user
-                if message.author.id == user_id and not message.content.startswith("Hey Axis"):
-                    messages.append(message.content)
-                    if len(messages) >= limit:
-                        break
-                        
-            return messages
+            # Get messages before the referenced message
+            before_messages = []
+            async for msg in channel.history(limit=context_size, before=referenced_message):
+                if not msg.content.startswith("Hey Axis") and not msg.author.bot:
+                    before_messages.append({
+                        "author": msg.author.display_name,
+                        "content": msg.content,
+                        "timestamp": msg.created_at.isoformat(),
+                        "referenced": False
+                    })
+            
+            # Add the referenced message
+            context_messages.append({
+                "author": referenced_message.author.display_name,
+                "content": referenced_message.content,
+                "timestamp": referenced_message.created_at.isoformat(),
+                "referenced": True
+            })
+            
+            # Get messages after the referenced message
+            after_messages = []
+            async for msg in channel.history(limit=context_size, after=referenced_message):
+                if not msg.content.startswith("Hey Axis") and not msg.author.bot:
+                    after_messages.append({
+                        "author": msg.author.display_name,
+                        "content": msg.content,
+                        "timestamp": msg.created_at.isoformat(),
+                        "referenced": False
+                    })
+            
+            # Combine all messages in chronological order
+            # Before messages are in reverse order, so reverse them
+            context_messages = list(reversed(before_messages)) + context_messages + after_messages
+            
+            return context_messages
         except Exception as e:
-            print(f"AI Cog: Error fetching message history: {e}")
+            print(f"AI Cog: Error fetching conversation context: {e}")
+            # Return at least the referenced message if we can
+            if referenced_message:
+                return [{
+                    "author": referenced_message.author.display_name,
+                    "content": referenced_message.content,
+                    "timestamp": referenced_message.created_at.isoformat(),
+                    "referenced": True
+                }]
             return []
 
     async def query_gemini(self, messages: List[Dict]) -> str:
@@ -413,41 +456,44 @@ class AICog(commands.Cog):
         # Check if this is an active conversation
         is_active = self.is_conversation_active(user_id, channel_id)
         
-        # NEW: Check if this is a reply to another message
+        # Check if this is a reply to another message
         is_reply = message.reference is not None
         replied_to_msg = None
-        replied_to_user_id = None
         
         # Get the message being replied to if this is a reply
         if is_reply:
             try:
                 # Fetch the message being replied to
                 replied_to_msg = await message.channel.fetch_message(message.reference.message_id)
-                replied_to_user_id = replied_to_msg.author.id
+                
+                # Skip if replying to a bot (except our own bot)
+                if replied_to_msg.author.bot and not (replied_to_msg.author.id == self.bot.user.id):
+                    is_reply = False
             except Exception as e:
                 print(f"AI Cog: Error fetching replied message: {e}")
+                is_reply = False
                 # Continue processing as a normal message
         
         # Check if this is a potential reply analysis request
         if is_reply and content.lower().startswith("hey axis"):
-            # Check for explanation intent
+            # Extract the query (remove "Hey Axis" prefix)
+            query = content[9:].strip()
+            
+            # Always check for explanation intent
             try:
-                should_explain = await self.detect_explanation_intent(content[9:].strip())  # Remove "Hey Axis" prefix
+                # If query is empty or clearly asking for explanation, skip intent detection
+                explicit_explanation_keywords = ["explain", "analyze", "what is", "what's", "what does", "what do", "what are"]
+                is_explicit_explanation = any(keyword in query.lower() for keyword in explicit_explanation_keywords) if query else True
+                
+                # If not explicitly asking for explanation, check intent
+                should_explain = is_explicit_explanation or await self.detect_explanation_intent(query)
                 
                 if should_explain:
                     # This is a reply and the user wants the AI to explain something
                     async with message.channel.typing():
-                        # Get message history of the user being replied to
-                        user_history = await self.get_user_message_history(
-                            message.channel, 
-                            replied_to_user_id,
-                            self.max_reply_context_messages
-                        )
-                        
-                        if user_history:
-                            # Process the conversation with context from the replied user
-                            await self.process_reply_explanation(message, replied_to_msg, user_history)
-                            return
+                        # Process the conversation with context from the replied message and its surroundings
+                        await self.process_reply_explanation(message, replied_to_msg, query)
+                        return
             except Exception as e:
                 print(f"AI Cog: Error in reply explanation detection: {e}")
                 # Continue with normal processing if explanation detection fails
@@ -494,7 +540,7 @@ class AICog(commands.Cog):
                         print(f"AI Cog: Error processing AI query: {e}")
                         await message.reply(f"Sorry, I encountered an error: {str(e)}")
 
-    async def process_reply_explanation(self, message, replied_to_msg, user_history):
+    async def process_reply_explanation(self, message, replied_to_msg, query_text):
         """Process a request to explain someone's messages in a reply context"""
         user_id = message.author.id
         channel_id = message.channel.id
@@ -506,15 +552,37 @@ class AICog(commands.Cog):
         if not conversation:
             conversation = [{
                 "role": "system",
-                "content": f"You are Axis, a helpful AI assistant for Discord. Be concise, friendly, and helpful. The user can chat with you in conversation mode, and they don't need to prefix messages with 'Hey Axis' during an active conversation. IMPORTANTLY, you should recognize when a user wants to end the conversation, even if they express it casually (e.g., 'that's all I needed', 'thanks for your help', 'I'll talk to you later', etc.). If you detect the user wants to end the conversation, respond appropriately and include {self.end_conversation_token} at the end of your message (which will be automatically removed before the user sees it)."
+                "content": f"You are Axis, a helpful AI assistant for Discord. Be concise, friendly, and helpful. The user can chat with you in conversation mode, and they don't need to prefix messages with 'Hey Axis' during an active conversation. When analyzing Discord conversations, be confident and insightful. IMPORTANTLY, you should recognize when a user wants to end the conversation, even if they express it casually (e.g., 'that's all I needed', 'thanks for your help', 'I'll talk to you later', etc.). If you detect the user wants to end the conversation, respond appropriately and include {self.end_conversation_token} at the end of your message (which will be automatically removed before the user sees it)."
             }]
         
-        # Combine the user history into a single context
-        context = "\n\n".join(user_history)
+        # Get the conversation context around the replied message
+        context_messages = await self.get_conversation_context(
+            message.channel,
+            replied_to_msg,
+            context_size=5  # Get 5 messages before and after
+        )
         
-        # Create a prompt that includes the context from the replied-to user
+        # Format the conversation context for the AI
+        formatted_context = ""
+        for i, ctx_msg in enumerate(context_messages):
+            prefix = "➤ " if ctx_msg.get("referenced", False) else ""
+            formatted_context += f"{prefix}**{ctx_msg['author']}**: {ctx_msg['content']}\n\n"
+        
+        # Determine the query - either use what comes after "Hey Axis" or use a default intent
+        if query_text.strip():
+            intent = query_text.strip()
+        else:
+            intent = "explain this conversation and what they're talking about"
+        
+        # Create a prompt that includes the context from the conversation
         replied_to_username = replied_to_msg.author.display_name
-        prompt = f"I'm replying to messages from user '{replied_to_username}'. Here are their recent messages:\n\n{context}\n\nPlease analyze or explain the content of these messages."
+        prompt = (
+            f"I'm in a Discord conversation and I've replied to a message from '{replied_to_username}' "
+            f"asking you to {intent}. Here's the conversation context (the message I replied to is marked with ➤):\n\n"
+            f"{formatted_context}\n\n"
+            f"Please analyze this conversation with confidence and clarity. Focus particularly on the message "
+            f"I replied to, but use the surrounding context to give a more accurate and insightful analysis."
+        )
         
         # Add the analysis request to the conversation
         conversation.append({
