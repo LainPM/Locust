@@ -134,6 +134,7 @@ class AntiRaidCog(commands.Cog):
         raid_alert_channel="Channel for detailed raid reports (optional)"
     )
     @app_commands.default_permissions(administrator=True)
+    @app_commands.guild_only()
     async def setup_antiraid(
         self,
         interaction: discord.Interaction,
