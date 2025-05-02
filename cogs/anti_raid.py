@@ -1,4 +1,3 @@
-# cogs/anti_raid.py
 import discord
 from discord.ext import commands
 from discord import app_commands
@@ -69,7 +68,7 @@ class AntiRaidCog(commands.Cog):
                     "staff_role_id": doc.get("staff_role_id"),
                     "manager_role_id": doc.get("manager_role_id"),
                     "mute_role_id": doc.get("mute_role_id"),
-                    "raid_alert_channel_id": doc.get("raid_alert_channel_id")
+                    "raid_alert_channel_id": doc.get("raid_alert_channel_id")  # Important: Make sure this is loaded
                 }
             print(f"AntiRaid Cog: Loaded configuration for {len(self.config)} guilds")
         except Exception as e:
@@ -127,16 +126,15 @@ class AntiRaidCog(commands.Cog):
                 print(f"AntiRaid Cog: Error in cleanup task: {e}")
                 await asyncio.sleep(60)
     
-    @app_commands.command(name="setupantiraid", description="Set up the anti-raid protection system for your server")
+    @app_commands.command(name="setup_antiraid", description="Set up the anti-raid protection system")
     @app_commands.describe(
         sensitivity="Raid detection sensitivity (0=Off, 1=Low, 2=Medium, 3=High)",
         mod_role="Moderator role to ping (optional)",
         manager_role="Community Manager role to ping (optional)",
         raid_alert_channel="Channel for detailed raid reports (optional)"
     )
-    @app_commands.guild_only()
     @app_commands.default_permissions(administrator=True)
-    async def setupantiraid(
+    async def setup_antiraid(
         self,
         interaction: discord.Interaction,
         sensitivity: int,
@@ -240,7 +238,7 @@ class AntiRaidCog(commands.Cog):
                 message += f"• Alert Channel: {raid_alert_channel.mention} ✅\n"
             
             message += "\nThe system will automatically monitor for raid behavior, delete recent raid messages, and timeout raiders."
-            
+        
         # Send response - Fixed: Only use one response method to avoid double messaging
         await interaction.response.send_message(message, ephemeral=False)
 
@@ -327,7 +325,7 @@ class AntiRaidCog(commands.Cog):
                     continue
                 
                 try:
-                    # Fixed: Changed from 20 to 50 messages per channel
+                    # Delete up to 50 messages per channel (increased from 20)
                     async for message in channel.history(limit=50):
                         if message.author.id == user_id:
                             # Save message info before deletion
@@ -343,7 +341,7 @@ class AntiRaidCog(commands.Cog):
                             await message.delete()
                             deleted_count += 1
                             
-                            # Fixed: Changed from 20 to 50 messages per channel
+                            # Limit to 50 messages per channel (increased from 20)
                             if len(deleted_messages) >= 50:
                                 break
                 except Exception as e:
@@ -709,7 +707,7 @@ class AntiRaidCog(commands.Cog):
                             # Set footer with additional info
                             embed.set_footer(text=f"Anti-Raid Protection | User ID: {user_id}")
                             
-                            # Send the detailed embed to the alert channel
+                            # Send the detailed embed to the alert channel with better error handling
                             try:
                                 alert_message = await alert_channel.send(
                                     content=f"**RAID ALERT:** User <@{user_id}> has been detected as a potential raider.",
@@ -728,6 +726,8 @@ class AntiRaidCog(commands.Cog):
                             except Exception as e:
                                 print(f"AntiRaid: Error sending detailed alert: {e}")
                                 print(f"Error details: {str(e)}")
+                        except Exception as e:
+                            print(f"AntiRaid: Error creating detailed alert: {e}")
                     else:
                         print(f"AntiRaid: Alert channel {raid_alert_channel_id} not found or not a text channel. Guild has {len(guild.text_channels)} text channels")
                 
