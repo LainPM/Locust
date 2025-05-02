@@ -67,7 +67,8 @@ class AntiRaidCog(commands.Cog):
                     "mod_role_id": doc.get("mod_role_id"),
                     "staff_role_id": doc.get("staff_role_id"),
                     "manager_role_id": doc.get("manager_role_id"),
-                    "mute_role_id": doc.get("mute_role_id")
+                    "mute_role_id": doc.get("mute_role_id"),
+                    "raid_alert_channel_id": doc.get("raid_alert_channel_id")  # Fixed: Added this line to properly load the raid alert channel ID
                 }
             print(f"AntiRaid Cog: Loaded configuration for {len(self.config)} guilds")
         except Exception as e:
@@ -224,11 +225,8 @@ class AntiRaidCog(commands.Cog):
                 message += f"• Alert Channel: {raid_alert_channel.mention} ✅\n"
             
             message += "\nThe system will automatically monitor for raid behavior, delete recent raid messages, and timeout raiders."
-            
-        # Send response - only use one response method
-        await interaction.response.send_message(message, ephemeral=False)
         
-        # Send response
+        # Fixed: Removed duplicate message sending - only use one response method
         if interaction.response.is_done():
             await interaction.followup.send(message, ephemeral=False)
         else:
@@ -317,7 +315,7 @@ class AntiRaidCog(commands.Cog):
                     continue
                 
                 try:
-                    # Only get last 20 messages per channel
+                    # Fixed: Changed from 20 to 50 messages per channel
                     async for message in channel.history(limit=50):
                         if message.author.id == user_id:
                             # Save message info before deletion
@@ -333,8 +331,8 @@ class AntiRaidCog(commands.Cog):
                             await message.delete()
                             deleted_count += 1
                             
-                            # Only delete up to 20 messages per channel
-                            if len(deleted_messages) >= 20:
+                            # Fixed: Changed from 20 to 50 messages per channel
+                            if len(deleted_messages) >= 50:
                                 break
                 except Exception as e:
                     print(f"AntiRaid: Error deleting messages in {channel.name}: {e}")
