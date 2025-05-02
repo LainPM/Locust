@@ -461,40 +461,43 @@ class DeleteConfirmView(ui.View):
         """Confirm ticket deletion"""
         await interaction.response.defer(ephemeral=True)
         
-        # Delete this message
-        await interaction.message.delete()
+        # Delete confirmation message
+        try:
+            await interaction.message.delete()
+        except:
+            pass
         
-        # Get parent view
-        closed_view = self.bot.get_cog("TicketSystem").get_view(ClosedTicketView)
-        if closed_view:
-            await closed_view._perform_delete(interaction)
-        else:
-            # Fallback - perform delete directly
-            cog = self.bot.get_cog("TicketSystem")
-            channel = interaction.channel
-            guild_id = interaction.guild.id
+        # Perform delete directly
+        cog = self.bot.get_cog("TicketSystem")
+        channel = interaction.channel
+        guild_id = interaction.guild.id
+        
+        # Get ticket data
+        ticket = await cog.tickets_col.find_one({
+            "guild_id": guild_id, 
+            "channel_id": channel.id
+        })
+        
+        if ticket:
+            # Update DB
+            await cog.tickets_col.update_one(
+                {"_id": ticket["_id"]},
+                {"$set": {
+                    "status": "deleted",
+                    "deleted_at": datetime.utcnow(),
+                    "deleted_by": interaction.user.id
+                }}
+            )
             
-            # Get ticket data
-            ticket = await cog.tickets_col.find_one({
-                "guild_id": guild_id, 
-                "channel_id": channel.id
-            })
-            
-            if ticket:
-                # Update DB
-                await cog.tickets_col.update_one(
-                    {"_id": ticket["_id"]},
-                    {"$set": {
-                        "status": "deleted",
-                        "deleted_at": datetime.utcnow(),
-                        "deleted_by": interaction.user.id
-                    }}
-                )
-                
-                # Delete channel
-                await channel.send("🗑️ **Deleting ticket in 5 seconds...**")
-                await asyncio.sleep(5)
+            # Delete channel after delay
+            await channel.send("🗑️ **Deleting ticket in 5 seconds...**")
+            await asyncio.sleep(5)
+            try:
                 await channel.delete()
+            except Exception as e:
+                await interaction.followup.send(f"Error deleting channel: {e}", ephemeral=True)
+        else:
+            await interaction.followup.send("Ticket not found in database", ephemeral=True)
     
     @ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: ui.Button):
