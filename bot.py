@@ -20,7 +20,7 @@ intents.members = True
 # MongoDB setup
 MONGO_URI = os.getenv("MONGO_URI")
 
-# CRITICAL: OVERRIDE discord.py's CommandTree.sync method to prevent automatic syncing
+# Store the original sync method
 original_sync = app_commands.CommandTree.sync
 
 async def disabled_sync(*args, **kwargs):
@@ -41,24 +41,21 @@ class MyBot(commands.Bot):
         self.db = self.mongo_client["discord_bot"]
         self.warnings_collection = self.db["warnings"]
         
-        # Explicitly store the original sync method for when we actually want to use it
+        # Store the original sync method for when we need it
         self._original_sync = original_sync
+        
+        # Currently syncing flag
+        self.currently_syncing = False
         
     async def get_commands_hash(self):
         """Generate a deterministic hash of the current command structure"""
         commands = []
         for cmd in self.tree.get_commands():
+            # Create a simpler dict representation that doesn't need the full command
             cmd_dict = {
                 "name": cmd.name,
                 "description": cmd.description,
-                "parameters": sorted([
-                    {
-                        "name": param.name,
-                        "description": param.description,
-                        "required": param.required
-                    }
-                    for param in cmd.parameters
-                ], key=lambda x: x["name"])
+                "parameters": [param.name for param in getattr(cmd, 'parameters', [])]
             }
             commands.append(cmd_dict)
         
@@ -146,28 +143,24 @@ class MyBot(commands.Bot):
                     await interaction.response.send_message("An error occurred while processing this command.", ephemeral=True)
             except:
                 pass
-
-    async def sync_command_direct(self, command):
-        """Sync a single command directly using the HTTP API"""
+                
+    async def real_sync(self, guild_id=None):
+        """Safely run the real sync with the original method"""
+        # Temporarily restore the original sync method
+        temp = app_commands.CommandTree.sync
+        app_commands.CommandTree.sync = self._original_sync
+        
         try:
-            # Get application ID
-            application_id = self.application_id
-            
-            # Convert command to JSON data
-            command_data = command.to_dict()
-            
-            # Use direct HTTP request to create/update the command
-            route = discord.http.Route(
-                'POST',
-                '/applications/{application_id}/commands',
-                application_id=application_id
-            )
-            
-            await self.http.request(route, json=command_data)
-            return True
-        except Exception as e:
-            print(f"Error syncing command {command.name}: {e}")
-            return False
+            if guild_id:
+                guild = discord.Object(id=int(guild_id))
+                synced = await self.tree.sync(guild=guild)
+            else:
+                synced = await self.tree.sync()
+                
+            return synced
+        finally:
+            # Restore our disabled sync regardless of outcome
+            app_commands.CommandTree.sync = temp
 
 # Create bot instance
 bot = MyBot()
@@ -219,6 +212,18 @@ async def sync_status(ctx):
 @commands.is_owner()
 async def sync_one(ctx, command_name: str):
     """Sync a single command by name"""
+    if bot.currently_syncing:
+        message = await ctx.send("A sync operation is already in progress.")
+        await asyncio.sleep(5)
+        try:
+            await message.delete()
+            await ctx.message.delete()
+        except:
+            pass
+        return
+        
+    bot.currently_syncing = True
+    
     try:
         # Find the command
         command = None
@@ -230,19 +235,44 @@ async def sync_one(ctx, command_name: str):
         if not command:
             message = await ctx.send(f"Command '/{command_name}' not found.")
             await asyncio.sleep(5)
-            await message.delete()
-            await ctx.message.delete()
+            try:
+                await message.delete()
+                await ctx.message.delete()
+            except:
+                pass
+            bot.currently_syncing = False
             return
         
         status_message = await ctx.send(f"Syncing command '/{command.name}'...")
         
-        # Use the direct HTTP method to sync the command
-        success = await bot.sync_command_direct(command)
+        # Create a temporary copy of the tree with just this command
+        temp_tree = app_commands.CommandTree(bot)
         
-        if success:
+        # Copy important methods from the main tree
+        temp_tree._guild_commands = {}
+        
+        # Store only this command
+        temp_tree._global_commands = {command.name: command}
+        
+        # Temporarily swap the bot's tree
+        original_tree = bot.tree
+        bot.tree = temp_tree
+        
+        try:
+            # Sync just this command
+            await bot.real_sync()
             await status_message.edit(content=f"✅ Command '/{command.name}' synced successfully!")
-        else:
-            await status_message.edit(content=f"❌ Failed to sync command '/{command.name}'.")
+        except discord.HTTPException as e:
+            if e.status == 429:  # Rate limited
+                retry_after = e.retry_after
+                await status_message.edit(content=f"Rate limited! Please wait {retry_after:.1f} seconds before trying again.")
+            else:
+                await status_message.edit(content=f"HTTP Error: {e}")
+        except Exception as e:
+            await status_message.edit(content=f"Error syncing command: {e}")
+        finally:
+            # Restore the original tree
+            bot.tree = original_tree
         
         # Delete messages after 5 seconds
         await asyncio.sleep(5)
@@ -252,20 +282,6 @@ async def sync_one(ctx, command_name: str):
         except:
             pass
             
-    except discord.HTTPException as e:
-        if e.status == 429:  # Rate limited
-            retry_after = e.retry_after
-            message = await ctx.send(f"Rate limited! Please wait {retry_after:.1f} seconds before trying again.")
-        else:
-            message = await ctx.send(f"HTTP Error: {e}")
-            
-        # Delete error message after 5 seconds
-        await asyncio.sleep(5)
-        try:
-            await message.delete()
-            await ctx.message.delete()
-        except:
-            pass
     except Exception as e:
         message = await ctx.send(f"Unexpected error: {e}")
         await asyncio.sleep(5)
@@ -274,16 +290,15 @@ async def sync_one(ctx, command_name: str):
             await ctx.message.delete()
         except:
             pass
+    finally:
+        bot.currently_syncing = False
 
 @bot.command()
 @commands.is_owner()
 async def sync_all(ctx):
-    """Sync all commands very slowly to avoid rate limits"""
-    commands = bot.tree.get_commands()
-    total = len(commands)
-    
-    if not total:
-        message = await ctx.send("No commands to sync.")
+    """Sync all commands one by one very slowly to avoid rate limits"""
+    if bot.currently_syncing:
+        message = await ctx.send("A sync operation is already in progress.")
         await asyncio.sleep(5)
         try:
             await message.delete()
@@ -291,123 +306,184 @@ async def sync_all(ctx):
         except:
             pass
         return
-    
-    status_message = await ctx.send(f"This will sync {total} commands one by one with 10-second delays between each. Continue? (yes/no)")
-    
-    def check(m):
-        return m.author == ctx.author and m.channel == ctx.channel and m.content.lower() in ["yes", "no"]
+        
+    bot.currently_syncing = True
     
     try:
-        response = await bot.wait_for("message", check=check, timeout=30.0)
-        if response.content.lower() != "yes":
-            await status_message.edit(content="Sync cancelled.")
+        commands = bot.tree.get_commands()
+        total = len(commands)
+        
+        if not total:
+            message = await ctx.send("No commands to sync.")
+            await asyncio.sleep(5)
+            try:
+                await message.delete()
+                await ctx.message.delete()
+            except:
+                pass
+            bot.currently_syncing = False
+            return
+        
+        status_message = await ctx.send(f"This will sync {total} commands one by one with 10-second delays between each. Continue? (yes/no)")
+        
+        def check(m):
+            return m.author == ctx.author and m.channel == ctx.channel and m.content.lower() in ["yes", "no"]
+        
+        try:
+            response = await bot.wait_for("message", check=check, timeout=30.0)
+            if response.content.lower() != "yes":
+                await status_message.edit(content="Sync cancelled.")
+                # Delete messages after 5 seconds
+                await asyncio.sleep(5)
+                try:
+                    await status_message.delete()
+                    await ctx.message.delete()
+                    await response.delete()
+                except:
+                    pass
+                bot.currently_syncing = False
+                return
+                
+            # Try to delete the response message
+            try:
+                await response.delete()
+            except:
+                pass
+        except asyncio.TimeoutError:
+            await status_message.edit(content="No response received. Sync cancelled.")
             # Delete messages after 5 seconds
             await asyncio.sleep(5)
             try:
                 await status_message.delete()
                 await ctx.message.delete()
-                await response.delete()
             except:
                 pass
+            bot.currently_syncing = False
             return
-            
-        # Try to delete the response message
-        try:
-            await response.delete()
-        except:
-            pass
-    except asyncio.TimeoutError:
-        await status_message.edit(content="No response received. Sync cancelled.")
-        # Delete messages after 5 seconds
-        await asyncio.sleep(5)
+        
+        # Start time for progress tracking
+        start_time = asyncio.get_event_loop().time()
+        
+        # Store original command tree
+        original_tree = bot.tree
+        
+        await status_message.edit(content=f"Starting safe sync of {total} commands. This will take approximately {total * 10 / 60:.1f} minutes...")
+        
+        success_count = 0
+        error_count = 0
+        
+        for i, command in enumerate(commands):
+            try:
+                # Create a progress message
+                elapsed = asyncio.get_event_loop().time() - start_time
+                estimated_total = (elapsed / (i + 1)) * total if i > 0 else 0
+                remaining = max(0, estimated_total - elapsed)
+                
+                await status_message.edit(
+                    content=f"Syncing command {i+1}/{total}: `/{command.name}`\n"
+                            f"Progress: {((i+1)/total)*100:.1f}%\n"
+                            f"Elapsed: {int(elapsed//60)}m {int(elapsed%60)}s | "
+                            f"Remaining: ~{int(remaining//60)}m {int(remaining%60)}s"
+                )
+                
+                # Create a temporary tree with just this command
+                temp_tree = app_commands.CommandTree(bot)
+                temp_tree._guild_commands = {}
+                temp_tree._global_commands = {command.name: command}
+                
+                # Temporarily swap the bot's tree
+                bot.tree = temp_tree
+                
+                try:
+                    # Sync just this command
+                    await bot.real_sync()
+                    success_count += 1
+                except discord.HTTPException as e:
+                    if e.status == 429:  # Rate limited
+                        retry_after = e.retry_after * 1.5  # Add buffer
+                        
+                        # Update status
+                        await status_message.edit(
+                            content=f"Rate limited on command {i+1}/{total}: `/{command.name}`\n"
+                                    f"Waiting {retry_after:.1f} seconds before continuing..."
+                        )
+                        
+                        # Wait the required time
+                        await asyncio.sleep(retry_after)
+                        
+                        # Try again
+                        try:
+                            await bot.real_sync()
+                            success_count += 1
+                        except Exception as retry_e:
+                            error_count += 1
+                            error_message = await ctx.send(f"Failed to sync `/{command.name}` after retry: {retry_e}")
+                            await asyncio.sleep(5)
+                            try:
+                                await error_message.delete()
+                            except:
+                                pass
+                    else:
+                        error_count += 1
+                        error_message = await ctx.send(f"HTTP Error syncing `/{command.name}`: {e}")
+                        await asyncio.sleep(5)
+                        try:
+                            await error_message.delete()
+                        except:
+                            pass
+                except Exception as e:
+                    error_count += 1
+                    error_message = await ctx.send(f"Error syncing `/{command.name}`: {e}")
+                    await asyncio.sleep(5)
+                    try:
+                        await error_message.delete()
+                    except:
+                        pass
+                finally:
+                    # Restore the original tree
+                    bot.tree = original_tree
+                
+                # Wait between commands
+                await asyncio.sleep(10)
+                
+            except Exception as e:
+                error_count += 1
+                error_message = await ctx.send(f"Unexpected error during sync for /{command.name}: {e}")
+                await asyncio.sleep(5)
+                try:
+                    await error_message.delete()
+                except:
+                    pass
+        
+        # Final status
+        total_time = asyncio.get_event_loop().time() - start_time
+        minutes = int(total_time // 60)
+        seconds = int(total_time % 60)
+        
+        await status_message.edit(
+            content=f"Sync complete!\n"
+                    f"Successfully synced {success_count}/{total} commands with {error_count} errors.\n"
+                    f"Total time: {minutes}m {seconds}s"
+        )
+        
+        # Final status stays longer - 10 seconds
+        await asyncio.sleep(10)
         try:
             await status_message.delete()
             await ctx.message.delete()
         except:
             pass
-        return
-    
-    await status_message.edit(content=f"Starting safe sync of {total} commands. This will take a LONG time...")
-    
-    success_count = 0
-    error_count = 0
-    
-    for i, command in enumerate(commands):
+        
+    except Exception as e:
+        error_message = await ctx.send(f"Error during sync: {e}")
+        await asyncio.sleep(5)
         try:
-            # Update status
-            await status_message.edit(
-                content=f"Syncing command {i+1}/{total}: `/{command.name}`\n"
-                        f"Progress: {((i+1)/total)*100:.1f}%\n"
-                        f"Waiting 10 seconds between commands to avoid rate limits."
-            )
-            
-            # Sync this command using direct HTTP
-            success = await bot.sync_command_direct(command)
-            
-            if success:
-                success_count += 1
-            else:
-                error_count += 1
-            
-            # Wait between commands - very conservative 10 seconds
-            await asyncio.sleep(10)
-            
-        except discord.HTTPException as e:
-            if e.status == 429:  # Rate limited
-                retry_after = e.retry_after
-                temp_message = await ctx.send(f"Rate limited! Waiting {retry_after + 5} seconds...")
-                await asyncio.sleep(retry_after + 5)
-                
-                # Try again
-                try:
-                    success = await bot.sync_command_direct(command)
-                    if success:
-                        success_count += 1
-                    else:
-                        error_count += 1
-                except Exception as retry_e:
-                    error_count += 1
-                    temp_message = await ctx.send(f"Failed to sync `/{command.name}` after retry: {retry_e}")
-                    await asyncio.sleep(5)
-                    await temp_message.delete()
-                
-                # Delete the rate limit message
-                try:
-                    await temp_message.delete()
-                except:
-                    pass
-                    
-            else:
-                error_count += 1
-                temp_message = await ctx.send(f"HTTP Error syncing `/{command.name}`: {e}")
-                await asyncio.sleep(5)
-                try:
-                    await temp_message.delete()
-                except:
-                    pass
-                
-        except Exception as e:
-            error_count += 1
-            temp_message = await ctx.send(f"Error syncing `/{command.name}`: {e}")
-            await asyncio.sleep(5)
-            try:
-                await temp_message.delete()
-            except:
-                pass
-    
-    # Final status
-    await status_message.edit(
-        content=f"Sync complete!\n"
-                f"Successfully synced {success_count}/{total} commands with {error_count} errors."
-    )
-    
-    # Delete messages after 10 seconds (longer for the final status)
-    await asyncio.sleep(10)
-    try:
-        await status_message.delete()
-        await ctx.message.delete()
-    except:
-        pass
+            await error_message.delete()
+            await ctx.message.delete()
+        except:
+            pass
+    finally:
+        bot.currently_syncing = False
 
 @bot.event
 async def on_ready():
