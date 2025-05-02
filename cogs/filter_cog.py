@@ -5,9 +5,6 @@ from enum import Enum
 import re
 from typing import List, Optional
 
-# Development guild for instant slash registration
-development_guild = discord.Object(id=YOUR_DEV_GUILD_ID)
-
 class MatchType(Enum):
     CONTAINS = "contains"
     EXACT = "exact"
@@ -19,10 +16,11 @@ class FilterCog(commands.Cog):
     """Cog for managing content filtering with blacklist and whitelist functionality"""
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        # Initialize database collections
         self.ensure_collections()
+        # Caches for blacklist/whitelist
         self.blacklist_cache = {}
         self.whitelist_cache = {}
-        self.active_views = {}
 
     def ensure_collections(self):
         if not hasattr(self.bot, 'db'):
@@ -43,30 +41,13 @@ class FilterCog(commands.Cog):
         async for doc in self.whitelist_collection.find({"guild_id": guild_id}):
             self.whitelist_cache[guild_id][doc["item"]] = doc["match_type"]
 
-    async def cog_load(self):
-        """Pre-load cache and sync commands on cog load"""
-        for guild in self.bot.guilds:
-            await self.load_cache_for_guild(guild.id)
-        # Sync to development guild for instant registration
-        try:
-            await self.bot.tree.sync(guild=development_guild)
-            print("FilterCog slash commands synced to development guild.")
-        except Exception as e:
-            print(f"Failed to sync FilterCog commands: {e}")
-
     @commands.Cog.listener()
     async def on_guild_join(self, guild: discord.Guild):
         await self.load_cache_for_guild(guild.id)
-        try:
-            await self.bot.tree.sync(guild=guild)
-        except:
-            pass
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot or not message.guild:
-            return
-        if message.content.startswith(tuple(self.bot.command_prefix)):
             return
         gid = message.guild.id
         if gid not in self.blacklist_cache:
@@ -74,9 +55,9 @@ class FilterCog(commands.Cog):
         if not self.blacklist_cache.get(gid):
             return
         content = message.content.lower()
-        if await self._is_whitelisted(content, gid):
+        if any(self._matches(content, itm, mt) for itm, mt in self.whitelist_cache.get(gid, {}).items()):
             return
-        if await self._is_blacklisted(content, gid):
+        if any(self._matches(content, itm, mt) for itm, mt in self.blacklist_cache.get(gid, {}).items()):
             try:
                 await message.delete()
                 await message.channel.send(
@@ -85,14 +66,6 @@ class FilterCog(commands.Cog):
                 )
             except discord.Forbidden:
                 pass
-
-    async def _is_blacklisted(self, content: str, guild_id: int) -> bool:
-        return any(self._matches(content, item, mtype)
-                   for item, mtype in self.blacklist_cache.get(guild_id, {}).items())
-
-    async def _is_whitelisted(self, content: str, guild_id: int) -> bool:
-        return any(self._matches(content, item, mtype)
-                   for item, mtype in self.whitelist_cache.get(guild_id, {}).items())
 
     def _matches(self, content: str, item: str, match_type: str) -> bool:
         try:
@@ -113,7 +86,6 @@ class FilterCog(commands.Cog):
     # ─── Slash Commands ──────────────────────────────────────────────────────────
 
     @app_commands.command(name="blacklist", description="Add or update an item in the blacklist")
-    @app_commands.guilds(development_guild)
     @app_commands.describe(
         item="The word/phrase/link to blacklist",
         match_type="Match type (contains, exact, etc.)",
@@ -137,14 +109,21 @@ class FilterCog(commands.Cog):
         gid = interaction.guild.id
         await self.blacklist_collection.update_one(
             {"guild_id": gid, "item": item},
-            {"$set": {"match_type": match_type, "reason": reason, "added_by": interaction.user.id, "added_at": discord.utils.utcnow().isoformat()}},
+            {"$set": {
+                "match_type": match_type,
+                "reason": reason,
+                "added_by": interaction.user.id,
+                "added_at": discord.utils.utcnow().isoformat()
+            }},
             upsert=True
         )
         self.blacklist_cache.setdefault(gid, {})[item] = match_type
-        await interaction.response.send_message(f"🚫 Blacklisted `{item}` ({match_type})", ephemeral=True)
+        await interaction.response.send_message(
+            f"🚫 Blacklisted `{item}` ({match_type})",
+            ephemeral=True
+        )
 
     @app_commands.command(name="whitelist", description="Add or update an item in the whitelist")
-    @app_commands.guilds(development_guild)
     @app_commands.describe(
         item="The word/phrase/link to whitelist",
         match_type="Match type (contains, exact, etc.)",
@@ -168,15 +147,21 @@ class FilterCog(commands.Cog):
         gid = interaction.guild.id
         await self.whitelist_collection.update_one(
             {"guild_id": gid, "item": item},
-            {"$set": {"match_type": match_type, "reason": reason, "added_by": interaction.user.id, "added_at": discord.utils.utcnow().isoformat()}},
+            {"$set": {
+                "match_type": match_type,
+                "reason": reason,
+                "added_by": interaction.user.id,
+                "added_at": discord.utils.utcnow().isoformat()
+            }},
             upsert=True
         )
         self.whitelist_cache.setdefault(gid, {})[item] = match_type
-        await interaction.response.send_message(f"✅ Whitelisted `{item}` ({match_type})", ephemeral=True)
+        await interaction.response.send_message(
+            f"✅ Whitelisted `{item}` ({match_type})",
+            ephemeral=True
+        )
 
     @app_commands.command(name="show_blacklisted", description="Show all blacklisted items")
-    @app_commands.guilds(development_guild)
-    @app_commands.describe(match_type="Filter by match type", ephemeral="Ephemeral response")
     @app_commands.default_permissions(manage_messages=True)
     async def show_blacklisted(
         self,
@@ -187,16 +172,25 @@ class FilterCog(commands.Cog):
         gid = interaction.guild.id
         items = await self.blacklist_collection.find({"guild_id": gid}).to_list(length=None)
         if not items:
-            return await interaction.response.send_message("No blacklisted items.", ephemeral=ephemeral)
-        embed = discord.Embed(title="Blacklisted Items", description=f"Match: {match_type}", color=discord.Color.red())
+            return await interaction.response.send_message(
+                "No blacklisted items found.",
+                ephemeral=ephemeral
+            )
+        embed = discord.Embed(
+            title="Blacklisted Items",
+            description=f"Filter: {match_type}",
+            color=discord.Color.red()
+        )
         for doc in items:
             if match_type == "all" or doc["match_type"] == match_type:
-                embed.add_field(name=doc["item"], value=f"Type: {doc['match_type']}", inline=False)
+                embed.add_field(
+                    name=doc["item"],
+                    value=f"Type: {doc['match_type']}",
+                    inline=False
+                )
         await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
 
     @app_commands.command(name="show_whitelisted", description="Show all whitelisted items")
-    @app_commands.guilds(development_guild)
-    @app_commands.describe(match_type="Filter by match type", ephemeral="Ephemeral response")
     @app_commands.default_permissions(manage_messages=True)
     async def show_whitelisted(
         self,
@@ -207,11 +201,22 @@ class FilterCog(commands.Cog):
         gid = interaction.guild.id
         items = await self.whitelist_collection.find({"guild_id": gid}).to_list(length=None)
         if not items:
-            return await interaction.response.send_message("No whitelisted items.", ephemeral=ephemeral)
-        embed = discord.Embed(title="Whitelisted Items", description=f"Match: {match_type}", color=discord.Color.green())
+            return await interaction.response.send_message(
+                "No whitelisted items found.",
+                ephemeral=ephemeral
+            )
+        embed = discord.Embed(
+            title="Whitelisted Items",
+            description=f"Filter: {match_type}",
+            color=discord.Color.green()
+        )
         for doc in items:
             if match_type == "all" or doc["match_type"] == match_type:
-                embed.add_field(name=doc["item"], value=f"Type: {doc['match_type']}", inline=False)
+                embed.add_field(
+                    name=doc["item"],
+                    value=f"Type: {doc['match_type']}",
+                    inline=False
+                )
         await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
 
 async def setup(bot: commands.Bot):
