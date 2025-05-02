@@ -68,7 +68,7 @@ class AntiRaidCog(commands.Cog):
                     "staff_role_id": doc.get("staff_role_id"),
                     "manager_role_id": doc.get("manager_role_id"),
                     "mute_role_id": doc.get("mute_role_id"),
-                    "raid_alert_channel_id": doc.get("raid_alert_channel_id")  # Fixed: Added this line to properly load the raid alert channel ID
+                    "raid_alert_channel_id": doc.get("raid_alert_channel_id")
                 }
             print(f"AntiRaid Cog: Loaded configuration for {len(self.config)} guilds")
         except Exception as e:
@@ -210,13 +210,6 @@ class AntiRaidCog(commands.Cog):
             "raid_alert_channel_id": raid_alert_channel.id if raid_alert_channel else None
         }
         
-        # Adjusted thresholds based on sensitivity to make them less strict
-        self.thresholds = {
-            1: {"ai": 15, "mute": 20},  # Low sensitivity
-            2: {"ai": 10, "mute": 15},  # Medium sensitivity 
-            3: {"ai": 8, "mute": 12}    # High sensitivity
-        }
-        
         # Save to database
         await self.save_config(guild_id)
         
@@ -245,8 +238,8 @@ class AntiRaidCog(commands.Cog):
                 message += f"• Alert Channel: {raid_alert_channel.mention} ✅\n"
             
             message += "\nThe system will automatically monitor for raid behavior, delete recent raid messages, and timeout raiders."
-        
-        # Fixed: Removed duplicate message sending - only use one response method
+            
+        # Send response - Fixed: Only use one response method to avoid double messaging
         if interaction.response.is_done():
             await interaction.followup.send(message, ephemeral=False)
         else:
@@ -616,7 +609,7 @@ class AntiRaidCog(commands.Cog):
                 
                 # Send detailed alert to the dedicated alert channel if configured
                 raid_alert_channel_id = config.get("raid_alert_channel_id")
-                # FIXED: Removed dependency on deleted_messages - alert channel should always be notified
+                # Fixed: Removed dependency on deleted_messages - alert channel should always be notified
                 if raid_alert_channel_id:
                     print(f"AntiRaid: Attempting to send alert to channel ID {raid_alert_channel_id}")
                     
