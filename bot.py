@@ -96,7 +96,7 @@ async def on_ready():
     # Set bot activity
     await bot.change_presence(activity=discord.Activity(
         type=discord.ActivityType.watching, 
-        name="for marketplace posts"
+        name="over everything."
     ))
     
     # Sync commands with Discord
@@ -131,12 +131,11 @@ async def on_guild_join(guild):
     
     if channel:
         embed = discord.Embed(
-            title="Thanks for adding the Marketplace Bot!",
-            description="This bot helps manage marketplace posts for your server.",
-            color=discord.Color.blue()
+            title="Axis has been added to this server. You really got lucky huh.",
+            description="I can help moderate, chat, setup tickets, marketposts, starboards, and much more.",
+            color=discord.Color.red()
         )
-        embed.add_field(name="Setup", value="Use `/setup_marketposts` to set up the marketplace system", inline=False)
-        embed.add_field(name="Usage", value="Members can use `/post` to create marketplace posts", inline=False)
+        embed.add_field(name="Setup", value="Use `/help` to see some commands to run.", inline=False)
         embed.set_footer(text="For help or issues, contact the bot owner")
         
         try:
