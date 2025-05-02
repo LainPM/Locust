@@ -3,7 +3,8 @@ from discord import app_commands
 from discord.ext import commands
 from enum import Enum
 import re
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
+import math
 
 class MatchType(Enum):
     CONTAINS = "contains"
@@ -11,6 +12,91 @@ class MatchType(Enum):
     STARTS_WITH = "starts_with"
     ENDS_WITH = "ends_with"
     REGEX = "regex"
+
+class PaginationView(discord.ui.View):
+    def __init__(self, items: List[Dict[str, Any]], match_type: str, 
+                 page: int, items_per_page: int, is_blacklist: bool, 
+                 interaction: discord.Interaction):
+        super().__init__(timeout=180)  # 3 minute timeout
+        self.items = items
+        self.match_type = match_type
+        self.current_page = page
+        self.items_per_page = items_per_page
+        self.is_blacklist = is_blacklist
+        self.interaction = interaction
+        self.total_pages = math.ceil(len(self.filtered_items) / self.items_per_page)
+        
+        # Disable buttons if needed
+        self.update_buttons()
+
+    @property
+    def filtered_items(self) -> List[Dict[str, Any]]:
+        """Get items filtered by match_type"""
+        if self.match_type == "all":
+            return self.items
+        return [item for item in self.items if item.get("match_type") == self.match_type]
+    
+    def get_embed(self) -> discord.Embed:
+        """Generate the embed for the current page"""
+        start_idx = (self.current_page - 1) * self.items_per_page
+        end_idx = start_idx + self.items_per_page
+        
+        filtered = self.filtered_items
+        page_items = filtered[start_idx:end_idx]
+        
+        title = "Blacklisted Items" if self.is_blacklist else "Whitelisted Items"
+        color = discord.Color.red() if self.is_blacklist else discord.Color.green()
+        
+        embed = discord.Embed(
+            title=title,
+            description=f"Filter: {self.match_type} | Page {self.current_page}/{self.total_pages}",
+            color=color
+        )
+        
+        if not page_items:
+            embed.add_field(name="No items found", value="Try a different page or filter", inline=False)
+        else:
+            for doc in page_items:
+                embed.add_field(
+                    name=doc["item"], 
+                    value=f"Type: {doc['match_type']}" + (f"\nReason: {doc.get('reason')}" if doc.get('reason') else ""),
+                    inline=False
+                )
+                
+        embed.set_footer(text=f"Showing {len(page_items)} items | Total: {len(filtered)} items")
+        return embed
+    
+    def update_buttons(self):
+        """Update button states based on current page"""
+        # Disable prev button if on first page
+        self.prev_button.disabled = (self.current_page <= 1)
+        # Disable next button if on last page
+        self.next_button.disabled = (self.current_page >= self.total_pages)
+
+    @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.grey)
+    async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_page = max(1, self.current_page - 1)
+        self.update_buttons()
+        await interaction.response.edit_message(embed=self.get_embed(), view=self)
+
+    @discord.ui.button(label="▶️ Next", style=discord.ButtonStyle.grey)
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_page = min(self.total_pages, self.current_page + 1)
+        self.update_buttons()
+        await interaction.response.edit_message(embed=self.get_embed(), view=self)
+
+    async def on_timeout(self):
+        """Remove buttons when the view times out"""
+        # Disable all buttons
+        for item in self.children:
+            if isinstance(item, discord.ui.Button):
+                item.disabled = True
+        
+        # Try to update the message - might fail if message is too old
+        try:
+            await self.message.edit(view=self)
+        except:
+            pass
 
 class FilterCog(commands.Cog):
     """Cog for managing content filtering with blacklist and whitelist functionality"""
@@ -175,31 +261,107 @@ class FilterCog(commands.Cog):
             processed.append(item)
         await interaction.response.send_message(f"✅ Bulk whitelisted: {', '.join(processed)} ({match_type})", ephemeral=True)
 
+    # Updated paginated commands
+    
     @app_commands.command(name="show_blacklisted", description="Show all blacklisted items")
+    @app_commands.describe(
+        match_type="Filter by match type (default: all)",
+        page="Page number to view",
+        ephemeral="Whether to show only to you"
+    )
+    @app_commands.choices(match_type=[
+        app_commands.Choice(name="All", value="all"),
+        app_commands.Choice(name="Contains", value=MatchType.CONTAINS.value),
+        app_commands.Choice(name="Exact", value=MatchType.EXACT.value),
+        app_commands.Choice(name="Starts With", value=MatchType.STARTS_WITH.value),
+        app_commands.Choice(name="Ends With", value=MatchType.ENDS_WITH.value),
+        app_commands.Choice(name="Regex", value=MatchType.REGEX.value)
+    ])
     @app_commands.default_permissions(manage_messages=True)
-    async def show_blacklisted(self, interaction: discord.Interaction, match_type: str = "all", ephemeral: bool = True):
+    async def show_blacklisted(self, interaction: discord.Interaction, match_type: str = "all", page: int = 1, ephemeral: bool = True):
         gid = interaction.guild.id
         items = await self.blacklist_collection.find({"guild_id": gid}).to_list(length=None)
+        
         if not items:
             return await interaction.response.send_message("No blacklisted items found.", ephemeral=ephemeral)
-        embed = discord.Embed(title="Blacklisted Items", description=f"Filter: {match_type}", color=discord.Color.red())
-        for doc in items:
-            if match_type == "all" or doc["match_type"] == match_type:
-                embed.add_field(name=doc["item"], value=f"Type: {doc['match_type']}", inline=False)
-        await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
+        
+        # Paginate with 25 items per page (Discord's limit for embed fields)
+        items_per_page = 25
+        
+        # Validate page number
+        filtered_items = items if match_type == "all" else [item for item in items if item.get("match_type") == match_type]
+        total_pages = max(1, math.ceil(len(filtered_items) / items_per_page))
+        page = max(1, min(page, total_pages))  # Ensure page is in valid range
+        
+        # Create paginator view
+        view = PaginationView(
+            items=items,
+            match_type=match_type,
+            page=page,
+            items_per_page=items_per_page,
+            is_blacklist=True,
+            interaction=interaction
+        )
+        
+        # Send the paginated response
+        await interaction.response.send_message(
+            embed=view.get_embed(), 
+            view=view,
+            ephemeral=ephemeral
+        )
+        
+        # Store the message for timeout handling
+        view.message = await interaction.original_response()
 
     @app_commands.command(name="show_whitelisted", description="Show all whitelisted items")
+    @app_commands.describe(
+        match_type="Filter by match type (default: all)", 
+        page="Page number to view",
+        ephemeral="Whether to show only to you"
+    )
+    @app_commands.choices(match_type=[
+        app_commands.Choice(name="All", value="all"),
+        app_commands.Choice(name="Contains", value=MatchType.CONTAINS.value),
+        app_commands.Choice(name="Exact", value=MatchType.EXACT.value),
+        app_commands.Choice(name="Starts With", value=MatchType.STARTS_WITH.value),
+        app_commands.Choice(name="Ends With", value=MatchType.ENDS_WITH.value),
+        app_commands.Choice(name="Regex", value=MatchType.REGEX.value)
+    ])
     @app_commands.default_permissions(manage_messages=True)
-    async def show_whitelisted(self, interaction: discord.Interaction, match_type: str = "all", ephemeral: bool = True):
+    async def show_whitelisted(self, interaction: discord.Interaction, match_type: str = "all", page: int = 1, ephemeral: bool = True):
         gid = interaction.guild.id
         items = await self.whitelist_collection.find({"guild_id": gid}).to_list(length=None)
+        
         if not items:
             return await interaction.response.send_message("No whitelisted items found.", ephemeral=ephemeral)
-        embed = discord.Embed(title="Whitelisted Items", description=f"Filter: {match_type}", color=discord.Color.green())
-        for doc in items:
-            if match_type == "all" or doc["match_type"] == match_type:
-                embed.add_field(name=doc["item"], value=f"Type: {doc['match_type']}", inline=False)
-        await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
+        
+        # Paginate with 25 items per page (Discord's limit for embed fields)
+        items_per_page = 25
+        
+        # Validate page number
+        filtered_items = items if match_type == "all" else [item for item in items if item.get("match_type") == match_type]
+        total_pages = max(1, math.ceil(len(filtered_items) / items_per_page))
+        page = max(1, min(page, total_pages))  # Ensure page is in valid range
+        
+        # Create paginator view
+        view = PaginationView(
+            items=items,
+            match_type=match_type,
+            page=page,
+            items_per_page=items_per_page,
+            is_blacklist=False,
+            interaction=interaction
+        )
+        
+        # Send the paginated response
+        await interaction.response.send_message(
+            embed=view.get_embed(), 
+            view=view,
+            ephemeral=ephemeral
+        )
+        
+        # Store the message for timeout handling
+        view.message = await interaction.original_response()
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(FilterCog(bot))
