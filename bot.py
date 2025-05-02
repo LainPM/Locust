@@ -5,6 +5,7 @@ import datetime
 import hashlib
 import json
 import random
+import time
 from datetime import timedelta
 from discord.ext import commands
 from discord import app_commands
@@ -31,14 +32,11 @@ class MyBot(commands.Bot):
         self.db = self.mongo_client["discord_bot"]
         self.warnings_collection = self.db["warnings"]
         
-        # Track if we've synced commands during this session
-        self.has_synced_this_session = False
+        # Command sync is completely disabled on startup
+        self.disable_all_syncing = True
         
-        # Last time we synced a command (for incremental syncing)
-        self.last_command_sync_time = None
-        
-        # Flag to disable auto-sync on startup
-        self.disable_startup_sync = os.getenv("DISABLE_STARTUP_SYNC", "false").lower() == "true"
+        # Currently syncing flag to prevent multiple syncs
+        self.currently_syncing = False
         
     async def get_commands_hash(self):
         """Generate a deterministic hash of the current command structure"""
@@ -75,6 +73,8 @@ class MyBot(commands.Bot):
                     print(f"Failed to load extension {filename}: {e}")
                     
         print("Cogs loaded successfully.")
+        print("IMPORTANT: Command syncing is DISABLED on startup to prevent rate limits.")
+        print("Use !sync_one or !sync_all to manually sync commands when needed.")
         
     async def process_commands(self, message):
         if message.content.startswith(self.command_prefix):
@@ -114,187 +114,331 @@ class MyBot(commands.Bot):
                     await interaction.response.send_message("An error occurred while processing this command.", ephemeral=True)
             except:
                 pass
-    
-    async def sync_incremental(self, ctx=None):
-        """Sync commands one at a time to avoid rate limits"""
-        # Get commands
-        commands = self.tree.get_commands()
-        
-        if not commands:
-            if ctx:
-                await ctx.send("No commands to sync.")
-            return
-        
-        total = len(commands)
-        synced = 0
-        errors = 0
-        
-        status_message = None
-        if ctx:
-            status_message = await ctx.send(f"Starting incremental sync of {total} commands...")
-        
-        # Use app_commands._state._http internal API to sync one by one
-        # This isn't ideal but currently there's no public API to sync individual commands
-        for i, command in enumerate(commands):
-            try:
-                # Create a copy of the command
-                cmd_payload = command.to_dict()
-                
-                # Get the application ID
-                application_id = self.application_id
-                
-                # Use the HTTP adapter directly
-                http = self.http
-                
-                # Make request
-                try:
-                    await http.request(
-                        discord.http.Route(
-                            'PUT',
-                            '/applications/{application_id}/commands/{command_id}',
-                            application_id=application_id,
-                            command_id=command.id if hasattr(command, 'id') and command.id else '@me'
-                        ),
-                        json=cmd_payload
-                    )
-                    synced += 1
-                    
-                    # Update status every few commands
-                    if ctx and status_message and i % 3 == 0:
-                        await status_message.edit(content=f"Syncing commands... {i+1}/{total} complete")
-                    
-                    # Delay between commands to avoid rate limits
-                    await asyncio.sleep(2.5)  # 2.5 seconds between commands
-                    
-                except discord.HTTPException as e:
-                    if e.status == 429:  # Rate limited
-                        retry_after = e.retry_after
-                        if ctx:
-                            await ctx.send(f"Rate limited! Waiting {retry_after:.2f} seconds before continuing...")
-                        
-                        # Wait the required time plus some buffer
-                        await asyncio.sleep(retry_after * 1.1)
-                        
-                        # Try again (recursive)
-                        try:
-                            await http.request(
-                                discord.http.Route(
-                                    'PUT',
-                                    '/applications/{application_id}/commands/{command_id}',
-                                    application_id=application_id,
-                                    command_id=command.id if hasattr(command, 'id') and command.id else '@me'
-                                ),
-                                json=cmd_payload
-                            )
-                            synced += 1
-                        except Exception as retry_e:
-                            errors += 1
-                            print(f"Error syncing command {command.name} after retry: {retry_e}")
-                    else:
-                        errors += 1
-                        print(f"HTTP error syncing command {command.name}: {e}")
-                        
-            except Exception as e:
-                errors += 1
-                print(f"Error syncing command {command.name}: {e}")
-        
-        # Update the hash since we've synced manually
-        current_hash = await self.get_commands_hash()
-        await self.db.sync_info.update_one(
-            {"bot_id": str(self.user.id)},
-            {"$set": {
-                "commands_hash": current_hash,
-                "last_sync": datetime.datetime.utcnow(),
-                "last_sync_reason": "Incremental sync"
-            }},
-            upsert=True
-        )
-        
-        self.has_synced_this_session = True
-        
-        if ctx and status_message:
-            await status_message.edit(content=f"Incremental sync complete! Synced {synced}/{total} commands with {errors} errors.")
 
 # Create bot instance
 bot = MyBot()
 
 @bot.command()
 @commands.is_owner()
-async def force_sync(ctx):
-    """Manually sync application commands incrementally to avoid rate limits"""
-    await ctx.send("Starting incremental command sync... This might take a moment.")
-    await bot.sync_incremental(ctx)
-
-@bot.command()
-@commands.is_owner() 
 async def sync_status(ctx):
-    """Check the current sync status"""
+    """Check the current sync status and list available commands"""
     sync_info = await bot.db.sync_info.find_one({"bot_id": str(bot.user.id)})
     
-    if not sync_info:
-        await ctx.send("No sync information found. The bot has not synced commands yet.")
-        return
-    
-    current_time = datetime.datetime.utcnow()
-    last_sync = sync_info.get("last_sync", "Never")
-    
-    if last_sync != "Never":
-        time_since = current_time - last_sync
-        days = time_since.days
-        hours = time_since.seconds // 3600
-        minutes = (time_since.seconds % 3600) // 60
-        time_since_str = f"{days} days, {hours} hours, {minutes} minutes ago"
-    else:
-        time_since_str = "Never"
+    commands = bot.tree.get_commands()
     
     embed = discord.Embed(
         title="Command Sync Status",
         color=discord.Color.blue()
     )
     
-    embed.add_field(name="Last Sync", value=time_since_str, inline=False)
-    embed.add_field(name="Last Sync Reason", value=sync_info.get("last_sync_reason", "Unknown"), inline=False)
-    embed.add_field(name="Synced This Session", value=str(bot.has_synced_this_session), inline=False)
+    if not sync_info:
+        embed.description = "No sync information found. The bot has not synced commands yet."
+    else:
+        # Last sync info
+        last_sync = sync_info.get("last_sync", "Never")
+        if last_sync != "Never":
+            time_since = datetime.datetime.utcnow() - last_sync
+            days = time_since.days
+            hours = time_since.seconds // 3600
+            minutes = (time_since.seconds % 3600) // 60
+            time_since_str = f"{days} days, {hours} hours, {minutes} minutes ago"
+        else:
+            time_since_str = "Never"
+            
+        embed.add_field(name="Last Sync", value=time_since_str, inline=False)
+        embed.add_field(name="Last Sync Reason", value=sync_info.get("last_sync_reason", "Unknown"), inline=False)
+        
+        # Check if command structure has changed
+        current_hash = await bot.get_commands_hash()
+        stored_hash = sync_info.get("commands_hash", "None")
+        hash_changed = current_hash != stored_hash
+        
+        embed.add_field(name="Commands Changed Since Last Sync", value=str(hash_changed), inline=False)
+        
+        if hash_changed:
+            embed.add_field(name="Current Hash", value=current_hash[:8] + "...", inline=True)
+            embed.add_field(name="Stored Hash", value=stored_hash[:8] + "...", inline=True)
     
-    # Check if command structure has changed
-    current_hash = await bot.get_commands_hash()
-    stored_hash = sync_info.get("commands_hash", "None")
-    hash_changed = current_hash != stored_hash
+    # Add syncing status
+    embed.add_field(name="Currently Syncing", value=str(bot.currently_syncing), inline=False)
+    embed.add_field(name="Startup Sync", value="Disabled", inline=False)
     
-    embed.add_field(name="Commands Changed Since Last Sync", value=str(hash_changed), inline=False)
+    # List available commands
+    command_list = "\n".join([f"- {cmd.name}" for cmd in commands[:10]])
+    if len(commands) > 10:
+        command_list += f"\n...and {len(commands) - 10} more"
     
-    if hash_changed:
-        embed.add_field(name="Current Hash", value=current_hash[:8] + "...", inline=True)
-        embed.add_field(name="Stored Hash", value=stored_hash[:8] + "...", inline=True)
+    if command_list:
+        embed.add_field(name=f"Available Commands ({len(commands)} total)", value=command_list, inline=False)
+    else:
+        embed.add_field(name="Available Commands", value="No commands available", inline=False)
     
-    # Count total commands
-    command_count = len(bot.tree.get_commands())
-    embed.add_field(name="Total Commands", value=str(command_count), inline=False)
-    
-    # Add startup sync status
-    startup_sync = "Disabled" if bot.disable_startup_sync else "Enabled"
-    embed.add_field(name="Startup Sync", value=startup_sync, inline=False)
+    # Available sync commands
+    embed.add_field(
+        name="Sync Commands", 
+        value="- `!sync_one <name>`: Sync a single command by name\n"
+              "- `!sync_all`: Sync all commands (very slow)\n"
+              "- `!sync_status`: Show this status\n"
+              "- `!sync_cancel`: Cancel ongoing sync",
+        inline=False
+    )
     
     await ctx.send(embed=embed)
 
 @bot.command()
 @commands.is_owner()
-async def toggle_startup_sync(ctx):
-    """Toggle whether commands sync on startup"""
-    current_setting = os.getenv("DISABLE_STARTUP_SYNC", "false").lower() == "true"
-    new_setting = not current_setting
+async def sync_one(ctx, command_name: str):
+    """Sync a single command by name"""
+    if bot.currently_syncing:
+        await ctx.send("A sync operation is already in progress. Use `!sync_cancel` to cancel it.")
+        return
     
-    # Update in-memory setting
-    bot.disable_startup_sync = new_setting
+    bot.currently_syncing = True
     
-    # We can't actually modify the .env file easily, but we can store this in the database
-    await bot.db.bot_settings.update_one(
-        {"setting": "disable_startup_sync"},
-        {"$set": {"value": new_setting}},
-        upsert=True
-    )
+    try:
+        # Find the command
+        command = None
+        for cmd in bot.tree.get_commands():
+            if cmd.name.lower() == command_name.lower():
+                command = cmd
+                break
+        
+        if not command:
+            await ctx.send(f"Command '{command_name}' not found.")
+            bot.currently_syncing = False
+            return
+        
+        await ctx.send(f"Syncing command '{command.name}'...")
+        
+        # Create command payload
+        cmd_payload = command.to_dict()
+        
+        # Get the application ID
+        application_id = bot.application_id
+        
+        # Make request
+        try:
+            # Use the HTTP adapter directly
+            http = bot.http
+            
+            # Check for existing command ID
+            command_id = getattr(command, 'id', None)
+            
+            if command_id:
+                # Update existing command
+                route = discord.http.Route(
+                    'PATCH',
+                    '/applications/{application_id}/commands/{command_id}',
+                    application_id=application_id,
+                    command_id=command_id
+                )
+            else:
+                # Create new command
+                route = discord.http.Route(
+                    'POST',
+                    '/applications/{application_id}/commands',
+                    application_id=application_id
+                )
+            
+            response = await http.request(route, json=cmd_payload)
+            
+            # Update the hash since we've synced a command
+            current_hash = await bot.get_commands_hash()
+            await bot.db.sync_info.update_one(
+                {"bot_id": str(bot.user.id)},
+                {"$set": {
+                    "last_sync": datetime.datetime.utcnow(),
+                    "last_sync_reason": f"Single command sync: {command.name}"
+                }},
+                upsert=True
+            )
+            
+            await ctx.send(f"✅ Command '{command.name}' synced successfully!")
+            
+        except discord.HTTPException as e:
+            if e.status == 429:  # Rate limited
+                retry_after = e.retry_after
+                await ctx.send(f"Rate limited! Please wait {retry_after:.1f} seconds before trying again.")
+            else:
+                await ctx.send(f"HTTP Error: {e}")
+        except Exception as e:
+            await ctx.send(f"Error syncing command: {e}")
+    finally:
+        bot.currently_syncing = False
+
+@bot.command()
+@commands.is_owner()
+async def sync_all(ctx):
+    """Sync all commands very slowly to avoid rate limits"""
+    if bot.currently_syncing:
+        await ctx.send("A sync operation is already in progress. Use `!sync_cancel` to cancel it.")
+        return
     
-    await ctx.send(f"Startup sync is now {'disabled' if new_setting else 'enabled'}.")
+    bot.currently_syncing = True
+    
+    try:
+        commands = bot.tree.get_commands()
+        total = len(commands)
+        
+        if not total:
+            await ctx.send("No commands to sync.")
+            return
+        
+        status_message = await ctx.send(f"Starting sync of {total} commands. This will be very slow to avoid rate limits...")
+        
+        success_count = 0
+        error_count = 0
+        
+        # Store start time to track progress
+        start_time = time.time()
+        
+        # Set up a cancellation flag
+        cancel_file = f"sync_cancel_{ctx.author.id}.flag"
+        with open(cancel_file, "w") as f:
+            f.write("active")
+        
+        for i, command in enumerate(commands):
+            # Check for cancellation
+            try:
+                if not os.path.exists(cancel_file):
+                    await status_message.edit(content=f"Sync cancelled after {i} of {total} commands.")
+                    return
+            except:
+                pass
+            
+            try:
+                # Create command payload
+                cmd_payload = command.to_dict()
+                
+                # Get the application ID
+                application_id = bot.application_id
+                
+                # Update status every command
+                elapsed = time.time() - start_time
+                estimated_total = (elapsed / (i + 1)) * total if i > 0 else 0
+                remaining = max(0, estimated_total - elapsed)
+                
+                await status_message.edit(
+                    content=f"Syncing command {i+1}/{total}: `{command.name}`\n"
+                            f"Progress: {((i+1)/total)*100:.1f}%\n"
+                            f"Elapsed: {int(elapsed//60)}m {int(elapsed%60)}s | "
+                            f"Remaining: ~{int(remaining//60)}m {int(remaining%60)}s\n"
+                            f"Use `!sync_cancel` to stop the sync."
+                )
+                
+                # Make request
+                try:
+                    # Use the HTTP adapter directly
+                    http = bot.http
+                    
+                    # Check for existing command ID
+                    command_id = getattr(command, 'id', None)
+                    
+                    if command_id:
+                        # Update existing command
+                        route = discord.http.Route(
+                            'PATCH',
+                            '/applications/{application_id}/commands/{command_id}',
+                            application_id=application_id,
+                            command_id=command_id
+                        )
+                    else:
+                        # Create new command
+                        route = discord.http.Route(
+                            'POST',
+                            '/applications/{application_id}/commands',
+                            application_id=application_id
+                        )
+                    
+                    response = await http.request(route, json=cmd_payload)
+                    success_count += 1
+                    
+                except discord.HTTPException as e:
+                    if e.status == 429:  # Rate limited
+                        retry_after = e.retry_after * 1.5  # Add buffer
+                        
+                        await status_message.edit(
+                            content=f"Rate limited on command {i+1}/{total}: `{command.name}`\n"
+                                    f"Waiting {retry_after:.1f} seconds before continuing...\n"
+                                    f"Progress: {(i/total)*100:.1f}%\n"
+                                    f"Use `!sync_cancel` to stop the sync."
+                        )
+                        
+                        # Wait the required time
+                        await asyncio.sleep(retry_after)
+                        
+                        # Try again
+                        try:
+                            await http.request(route, json=cmd_payload)
+                            success_count += 1
+                        except Exception as retry_e:
+                            error_count += 1
+                            print(f"Error syncing command {command.name} after retry: {retry_e}")
+                    else:
+                        error_count += 1
+                        print(f"HTTP error syncing command {command.name}: {e}")
+                except Exception as e:
+                    error_count += 1
+                    print(f"Error syncing command {command.name}: {e}")
+                
+                # Delay between commands - very conservative 6-8 seconds
+                delay = random.uniform(6, 8)
+                await asyncio.sleep(delay)
+                
+            except Exception as e:
+                print(f"Unexpected error during sync for {command.name}: {e}")
+                error_count += 1
+        
+        # Update the hash since we've synced
+        current_hash = await bot.get_commands_hash()
+        await bot.db.sync_info.update_one(
+            {"bot_id": str(bot.user.id)},
+            {"$set": {
+                "commands_hash": current_hash,
+                "last_sync": datetime.datetime.utcnow(),
+                "last_sync_reason": "Full command sync"
+            }},
+            upsert=True
+        )
+        
+        # Clean up cancel file
+        try:
+            os.remove(cancel_file)
+        except:
+            pass
+        
+        # Final status
+        total_time = time.time() - start_time
+        minutes = int(total_time // 60)
+        seconds = int(total_time % 60)
+        
+        await status_message.edit(
+            content=f"Sync complete!\n"
+                    f"Successfully synced {success_count}/{total} commands with {error_count} errors.\n"
+                    f"Total time: {minutes}m {seconds}s"
+        )
+        
+    except Exception as e:
+        await ctx.send(f"Error during sync: {e}")
+    finally:
+        bot.currently_syncing = False
+
+@bot.command()
+@commands.is_owner()
+async def sync_cancel(ctx):
+    """Cancel an ongoing sync operation"""
+    cancel_file = f"sync_cancel_{ctx.author.id}.flag"
+    
+    if not bot.currently_syncing:
+        await ctx.send("No sync operation is currently running.")
+        return
+    
+    try:
+        # Remove the cancel file to signal cancellation
+        os.remove(cancel_file)
+        await ctx.send("Sync cancellation requested. The sync will stop after the current command completes.")
+    except:
+        await ctx.send("Failed to cancel sync. It may have already completed or been cancelled.")
 
 @bot.event
 async def on_ready():
@@ -306,65 +450,9 @@ async def on_ready():
         name="over everything."
     ))
     
-    # Check if we've already synced commands this session
-    if bot.has_synced_this_session:
-        print("Commands already synced this session, skipping check")
-        return
-    
-    # Load setting from database
-    setting = await bot.db.bot_settings.find_one({"setting": "disable_startup_sync"})
-    if setting:
-        bot.disable_startup_sync = setting.get("value", False)
-    
-    # Skip if startup sync is disabled
-    if bot.disable_startup_sync:
-        print("Startup sync is disabled. Skipping command sync.")
-        return
-    
-    # Ensure sync_info collection exists
-    collections = await bot.db.list_collection_names()
-    if "sync_info" not in collections:
-        await bot.db.create_collection("sync_info")
-    
-    # Get current command structure hash
-    current_hash = await bot.get_commands_hash()
-    print(f"Current command hash: {current_hash[:8]}...")
-    
-    # Get last sync info
-    sync_info = await bot.db.sync_info.find_one({"bot_id": str(bot.user.id)})
-    
-    # Determine if we should sync
-    should_sync = False
-    reason = ""
-    
-    if not sync_info:
-        should_sync = True
-        reason = "First run, no sync history found"
-    else:
-        stored_hash = sync_info.get("commands_hash")
-        if stored_hash != current_hash:
-            should_sync = True
-            reason = f"Command structure has changed (old: {stored_hash[:8]}..., new: {current_hash[:8]}...)"
-            print(f"Command hash changed: {stored_hash[:8]}... -> {current_hash[:8]}...")
-        else:
-            print(f"Command hash unchanged: {stored_hash[:8]}...")
-            
-            # Check last sync time - but only for information, not to trigger a sync
-            current_time = datetime.datetime.utcnow()
-            last_sync = sync_info.get("last_sync")
-            if last_sync:
-                time_diff = current_time - last_sync
-                print(f"Last sync was {time_diff.days} days, {time_diff.seconds // 3600} hours ago")
-    
-    # Sync if needed
-    if should_sync:
-        print(f"Syncing slash commands incrementally... Reason: {reason}")
-        try:
-            await bot.sync_incremental()
-        except Exception as e:
-            print(f"Failed to sync commands: {e}")
-    else:
-        print("Skipping command sync: No changes detected")
+    # DO NOT sync commands on startup
+    print("Command syncing on startup is DISABLED to prevent rate limits.")
+    print("Use !sync_one or !sync_all to manually sync commands when needed.")
 
 @bot.event
 async def on_message(message):
@@ -376,6 +464,8 @@ async def on_guild_join(guild):
     """Handle bot joining a new server"""
     print(f"Bot joined a new guild: {guild.name} (ID: {guild.id})")
     
+    # Do NOT automatically sync commands to new guild
+    
     # Create a welcome message
     channel = guild.system_channel or next((ch for ch in guild.text_channels if ch.permissions_for(guild.me).send_messages), None)
     
@@ -385,7 +475,7 @@ async def on_guild_join(guild):
             description="I can help moderate, chat, setup tickets, marketposts, starboards, and much more.",
             color=discord.Color.red()
         )
-        embed.add_field(name="Setup", value="Use `/help` to see some commands to run.", inline=False)
+        embed.add_field(name="Setup", value="Use `!sync_status` to check available commands.", inline=False)
         embed.set_footer(text="For help or issues, contact the bot owner")
         
         try:
