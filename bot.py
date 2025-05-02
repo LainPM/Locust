@@ -505,8 +505,9 @@ async def sync_one(ctx, command_name: str):
 
 @bot.command()
 @commands.is_owner()
-async def sync_all(ctx):
-    """Sync only commands that aren't already synced with per-command timeout"""
+async def sync_all(ctx, wait_time: int = 15):
+    """Sync only commands that aren't already synced with per-command timeout. 
+    Optional parameter: wait_time (default: 15 seconds)"""
     if bot.currently_syncing:
         elapsed = (datetime.datetime.now() - bot.sync_start_time).total_seconds()
         message = await ctx.send(f"A sync operation is already in progress for {elapsed:.1f} seconds. Use `!sync_reset` if it's stuck.")
@@ -546,7 +547,8 @@ async def sync_all(ctx):
             bot.end_sync()  # Mark sync as complete
             return
         
-        status_message = await ctx.send(f"Found {total} commands that need syncing. This will sync them one by one with 10-second delays between each. Continue? (yes/no)")
+        status_message = await ctx.send(f"Found {total} commands that need syncing. This will sync them one by one with {wait_time}-second delays between each. Continue? (yes/no)")
+        message_deleted = False
         
         def check(m):
             return m.author == ctx.author and m.channel == ctx.channel and m.content.lower() in ["yes", "no"]
@@ -554,16 +556,21 @@ async def sync_all(ctx):
         try:
             response = await bot.wait_for("message", check=check, timeout=30.0)
             if response.content.lower() != "yes":
-                await status_message.edit(content="Sync cancelled.")
-                # Delete messages after 5 seconds if in a guild
-                if ctx.guild:
+                if not message_deleted:
                     try:
-                        await asyncio.sleep(5)
-                        await status_message.delete()
-                        await ctx.message.delete()
-                        await response.delete()
-                    except:
-                        pass
+                        await status_message.edit(content="Sync cancelled.")
+                        # Delete messages after 5 seconds if in a guild
+                        if ctx.guild:
+                            try:
+                                await asyncio.sleep(5)
+                                await status_message.delete()
+                                await ctx.message.delete()
+                                await response.delete()
+                            except:
+                                message_deleted = True
+                    except discord.NotFound:
+                        message_deleted = True
+                
                 bot.end_sync()  # Mark sync as complete
                 return
                 
@@ -574,22 +581,36 @@ async def sync_all(ctx):
                 except:
                     pass
         except asyncio.TimeoutError:
-            await status_message.edit(content="No response received. Sync cancelled.")
-            # Delete messages after 5 seconds if in a guild
-            if ctx.guild:
+            if not message_deleted:
                 try:
-                    await asyncio.sleep(5)
-                    await status_message.delete()
-                    await ctx.message.delete()
-                except:
-                    pass
+                    await status_message.edit(content="No response received. Sync cancelled.")
+                    # Delete messages after 5 seconds if in a guild
+                    if ctx.guild:
+                        try:
+                            await asyncio.sleep(5)
+                            await status_message.delete()
+                            await ctx.message.delete()
+                        except:
+                            message_deleted = True
+                except discord.NotFound:
+                    message_deleted = True
+            
             bot.end_sync()  # Mark sync as complete
             return
         
         # Start time for progress tracking
         start_time = asyncio.get_event_loop().time()
         
-        await status_message.edit(content=f"Starting sync of {total} commands. This will take approximately {total * 10 / 60:.1f} minutes...")
+        try:
+            await status_message.edit(content=f"Starting sync of {total} commands. This will take approximately {total * wait_time / 60:.1f} minutes...")
+        except discord.NotFound:
+            message_deleted = True
+            # Create a new status message since the old one was deleted
+            try:
+                status_message = await ctx.send(f"Starting sync of {total} commands. This will take approximately {total * wait_time / 60:.1f} minutes...")
+            except:
+                # If we can't send a new message, continue without status updates
+                pass
         
         success_count = 0
         error_count = 0
@@ -598,21 +619,25 @@ async def sync_all(ctx):
         
         for i, command in enumerate(commands_to_sync):
             try:
-                # Update progress message
-                elapsed = asyncio.get_event_loop().time() - start_time
-                estimated_total = (elapsed / (i + 1)) * total if i > 0 else 0
-                remaining = max(0, estimated_total - elapsed)
-                
-                status_text = f"Syncing command {i+1}/{total}: `/{command.name}`\n"
-                status_text += f"Progress: {((i+1)/total)*100:.1f}%\n"
-                status_text += f"Elapsed: {int(elapsed//60)}m {int(elapsed%60)}s | "
-                status_text += f"Remaining: ~{int(remaining//60)}m {int(remaining%60)}s"
-                
-                if rate_limited:
-                    status_text += "\n⚠️ Rate limited on previous command. Proceeding with caution."
-                    rate_limited = False
-                
-                await status_message.edit(content=status_text)
+                # Update progress message if it hasn't been deleted
+                if not message_deleted:
+                    elapsed = asyncio.get_event_loop().time() - start_time
+                    estimated_total = (elapsed / (i + 1)) * total if i > 0 else 0
+                    remaining = max(0, estimated_total - elapsed)
+                    
+                    status_text = f"Syncing command {i+1}/{total}: `/{command.name}`\n"
+                    status_text += f"Progress: {((i+1)/total)*100:.1f}%\n"
+                    status_text += f"Elapsed: {int(elapsed//60)}m {int(elapsed%60)}s | "
+                    status_text += f"Remaining: ~{int(remaining//60)}m {int(remaining%60)}s"
+                    
+                    if rate_limited:
+                        status_text += "\n⚠️ Rate limited on previous command. Proceeding with caution."
+                        rate_limited = False
+                    
+                    try:
+                        await status_message.edit(content=status_text)
+                    except discord.NotFound:
+                        message_deleted = True
                 
                 # Get command data and sync with a 15-second timeout
                 command_data = bot.get_command_json(command)
@@ -624,22 +649,30 @@ async def sync_all(ctx):
                     if isinstance(result, TimeoutError):
                         # Timeout error - just move on to the next command
                         timeout_count += 1
-                        error_message = await ctx.send(f"⏱️ Sync timed out for command '/{command.name}' - moving to next command.")
-                        if ctx.guild:
-                            try:
-                                await asyncio.sleep(5)
-                                await error_message.delete()
-                            except:
-                                pass
+                        try:
+                            error_message = await ctx.send(f"⏱️ Sync timed out for command '/{command.name}' - moving to next command.")
+                            if ctx.guild:
+                                try:
+                                    await asyncio.sleep(5)
+                                    await error_message.delete()
+                                except:
+                                    pass
+                        except:
+                            # If we can't send a message, just continue
+                            pass
                     elif isinstance(result, discord.HTTPException) and result.status == 429:
                         # Rate limited, wait longer
                         retry_after = result.retry_after * 1.5  # Add buffer
                         rate_limited = True
                         
-                        await status_message.edit(
-                            content=f"⏱️ Rate limited on command {i+1}/{total}: `/{command.name}`\n"
-                                    f"Waiting {retry_after:.1f} seconds before continuing..."
-                        )
+                        if not message_deleted:
+                            try:
+                                await status_message.edit(
+                                    content=f"⏱️ Rate limited on command {i+1}/{total}: `/{command.name}`\n"
+                                            f"Waiting {retry_after:.1f} seconds before continuing..."
+                                )
+                            except discord.NotFound:
+                                message_deleted = True
                         
                         # Wait the required time
                         await asyncio.sleep(retry_after)
@@ -650,47 +683,63 @@ async def sync_all(ctx):
                             success_count += 1
                         elif isinstance(retry_result, TimeoutError):
                             timeout_count += 1
-                            error_message = await ctx.send(f"⏱️ Sync timed out for command '/{command.name}' after retry - moving to next command.")
-                            if ctx.guild:
-                                try:
-                                    await asyncio.sleep(5)
-                                    await error_message.delete()
-                                except:
-                                    pass
+                            try:
+                                error_message = await ctx.send(f"⏱️ Sync timed out for command '/{command.name}' after retry - moving to next command.")
+                                if ctx.guild:
+                                    try:
+                                        await asyncio.sleep(5)
+                                        await error_message.delete()
+                                    except:
+                                        pass
+                            except:
+                                # If we can't send a message, just continue
+                                pass
                         else:
                             error_count += 1
-                            error_message = await ctx.send(f"Failed to sync `/{command.name}` after retry: {retry_result}")
-                            if ctx.guild:
-                                try:
-                                    await asyncio.sleep(5)
-                                    await error_message.delete()
-                                except:
-                                    pass
+                            try:
+                                error_message = await ctx.send(f"Failed to sync `/{command.name}` after retry: {retry_result}")
+                                if ctx.guild:
+                                    try:
+                                        await asyncio.sleep(5)
+                                        await error_message.delete()
+                                    except:
+                                        pass
+                            except:
+                                # If we can't send a message, just continue
+                                pass
                     else:
                         # Other error
                         error_count += 1
-                        error_message = await ctx.send(f"Error syncing `/{command.name}`: {result}")
-                        if ctx.guild:
-                            try:
-                                await asyncio.sleep(5)
-                                await error_message.delete()
-                            except:
-                                pass
+                        try:
+                            error_message = await ctx.send(f"Error syncing `/{command.name}`: {result}")
+                            if ctx.guild:
+                                try:
+                                    await asyncio.sleep(5)
+                                    await error_message.delete()
+                                except:
+                                    pass
+                        except:
+                            # If we can't send a message, just continue
+                            pass
                 
-                # Wait between commands - very conservative
-                await asyncio.sleep(10)
+                # Wait between commands - user specified or default 15s
+                await asyncio.sleep(wait_time)
                 
             except Exception as e:
                 error_count += 1
                 print(f"Error syncing command {command.name}: {e}")
                 print(traceback.format_exc())
-                error_message = await ctx.send(f"Unexpected error during sync for /{command.name}: {e}")
-                if ctx.guild:
-                    try:
-                        await asyncio.sleep(5)
-                        await error_message.delete()
-                    except:
-                        pass
+                try:
+                    error_message = await ctx.send(f"Unexpected error during sync for /{command.name}: {e}")
+                    if ctx.guild:
+                        try:
+                            await asyncio.sleep(5)
+                            await error_message.delete()
+                        except:
+                            pass
+                except:
+                    # If we can't send a message, just continue
+                    pass
         
         # Force refresh the registered commands cache
         await bot.get_registered_commands(force_refresh=True)
@@ -700,13 +749,31 @@ async def sync_all(ctx):
         minutes = int(total_time // 60)
         seconds = int(total_time % 60)
         
-        await status_message.edit(
-            content=f"Sync complete!\n"
-                    f"✅ Successfully synced: {success_count}/{total} commands\n"
-                    f"⏱️ Timed out: {timeout_count}/{total} commands\n"
-                    f"❌ Failed: {error_count}/{total} commands\n"
-                    f"Total time: {minutes}m {seconds}s"
+        final_message = (
+            f"Sync complete!\n"
+            f"✅ Successfully synced: {success_count}/{total} commands\n"
+            f"⏱️ Timed out: {timeout_count}/{total} commands\n"
+            f"❌ Failed: {error_count}/{total} commands\n"
+            f"Total time: {minutes}m {seconds}s"
         )
+        
+        # Send final status as a new message, or update existing if not deleted
+        if message_deleted:
+            try:
+                status_message = await ctx.send(final_message)
+            except:
+                # If we can't send a message, just continue
+                pass
+        else:
+            try:
+                await status_message.edit(content=final_message)
+            except discord.NotFound:
+                # If message was just deleted, send a new one
+                try:
+                    status_message = await ctx.send(final_message)
+                except:
+                    # If we can't send a message, just continue
+                    pass
         
         # Final status stays longer - 10 seconds
         if ctx.guild:
@@ -720,14 +787,18 @@ async def sync_all(ctx):
     except Exception as e:
         print(f"Error in sync_all: {e}")
         print(traceback.format_exc())
-        error_message = await ctx.send(f"Error during sync: {e}")
-        if ctx.guild:
-            try:
-                await asyncio.sleep(5)
-                await error_message.delete()
-                await ctx.message.delete()
-            except:
-                pass
+        try:
+            error_message = await ctx.send(f"Error during sync: {e}")
+            if ctx.guild:
+                try:
+                    await asyncio.sleep(5)
+                    await error_message.delete()
+                    await ctx.message.delete()
+                except:
+                    pass
+        except:
+            # If we can't send a message, just continue
+            pass
     finally:
         bot.end_sync()  # Always mark sync as complete, even if there was an error
 
