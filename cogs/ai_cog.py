@@ -79,6 +79,9 @@ class AICog(commands.Cog):
         # Maximum number of messages to keep in history
         self.max_history_messages = 10
         
+        # Maximum number of messages to analyze in reply context
+        self.max_reply_context_messages = 10
+        
         # Start background task to clean up inactive conversations
         self.bg_task = bot.loop.create_task(self.cleanup_inactive_conversations())
         
@@ -301,6 +304,35 @@ class AICog(commands.Cog):
         
         response = await self.query_gemini_simple(prompt)
         return "YES" in response.strip().upper()
+    
+    async def detect_explanation_intent(self, message_text: str) -> bool:
+        """Detect if a message indicates the user wants an explanation of something"""
+        # This function asks the AI if the message indicates an intent to explain something
+        prompt = [{
+            "role": "user", 
+            "content": f'Does this message indicate the user wants me to explain or analyze something? They might be saying things like "explain this", "what do you think about this", "can you analyze this", etc. Reply with only "YES" or "NO": "{message_text}"'
+        }]
+        
+        response = await self.query_gemini_simple(prompt)
+        return "YES" in response.strip().upper()
+
+    async def get_user_message_history(self, channel, user_id, limit=10) -> List[str]:
+        """Get the message history for a specific user in a channel"""
+        messages = []
+        
+        try:
+            # Fetch recent messages from the channel
+            async for message in channel.history(limit=100):  # Fetch more than needed to filter
+                # Only include messages from the specified user
+                if message.author.id == user_id and not message.content.startswith("Hey Axis"):
+                    messages.append(message.content)
+                    if len(messages) >= limit:
+                        break
+                        
+            return messages
+        except Exception as e:
+            print(f"AI Cog: Error fetching message history: {e}")
+            return []
 
     async def query_gemini(self, messages: List[Dict]) -> str:
         """Query Gemini API"""
@@ -381,7 +413,46 @@ class AICog(commands.Cog):
         # Check if this is an active conversation
         is_active = self.is_conversation_active(user_id, channel_id)
         
-        # If message starts with "Hey Axis" or conversation is active
+        # NEW: Check if this is a reply to another message
+        is_reply = message.reference is not None
+        replied_to_msg = None
+        replied_to_user_id = None
+        
+        # Get the message being replied to if this is a reply
+        if is_reply:
+            try:
+                # Fetch the message being replied to
+                replied_to_msg = await message.channel.fetch_message(message.reference.message_id)
+                replied_to_user_id = replied_to_msg.author.id
+            except Exception as e:
+                print(f"AI Cog: Error fetching replied message: {e}")
+                # Continue processing as a normal message
+        
+        # Check if this is a potential reply analysis request
+        if is_reply and content.lower().startswith("hey axis"):
+            # Check for explanation intent
+            try:
+                should_explain = await self.detect_explanation_intent(content[9:].strip())  # Remove "Hey Axis" prefix
+                
+                if should_explain:
+                    # This is a reply and the user wants the AI to explain something
+                    async with message.channel.typing():
+                        # Get message history of the user being replied to
+                        user_history = await self.get_user_message_history(
+                            message.channel, 
+                            replied_to_user_id,
+                            self.max_reply_context_messages
+                        )
+                        
+                        if user_history:
+                            # Process the conversation with context from the replied user
+                            await self.process_reply_explanation(message, replied_to_msg, user_history)
+                            return
+            except Exception as e:
+                print(f"AI Cog: Error in reply explanation detection: {e}")
+                # Continue with normal processing if explanation detection fails
+        
+        # Original conversation logic
         if content.lower().startswith("hey axis") or is_active:
             # If user is in an active conversation, first check if they're trying to end it
             # Only do this if the message doesn't start with "Hey Axis" (which would be a new query)
@@ -391,7 +462,7 @@ class AICog(commands.Cog):
                     should_end = await self.detect_end_intent(content)
                     if should_end:
                         await self.mark_conversation_inactive(user_id, channel_id)
-                        await message.reply("<End Conversation>")
+                        await message.reply("Conversation ended. Feel free to start a new one anytime with 'Hey Axis'!")
                         return
                 except Exception as e:
                     print(f"AI Cog: Error detecting end intent: {e}")
@@ -422,6 +493,77 @@ class AICog(commands.Cog):
                     except Exception as e:
                         print(f"AI Cog: Error processing AI query: {e}")
                         await message.reply(f"Sorry, I encountered an error: {str(e)}")
+
+    async def process_reply_explanation(self, message, replied_to_msg, user_history):
+        """Process a request to explain someone's messages in a reply context"""
+        user_id = message.author.id
+        channel_id = message.channel.id
+        
+        # Get conversation history or create a new one
+        conversation = await self.get_conversation(user_id, channel_id)
+        
+        # If no conversation yet, add system message
+        if not conversation:
+            conversation = [{
+                "role": "system",
+                "content": f"You are Axis, a helpful AI assistant for Discord. Be concise, friendly, and helpful. The user can chat with you in conversation mode, and they don't need to prefix messages with 'Hey Axis' during an active conversation. IMPORTANTLY, you should recognize when a user wants to end the conversation, even if they express it casually (e.g., 'that's all I needed', 'thanks for your help', 'I'll talk to you later', etc.). If you detect the user wants to end the conversation, respond appropriately and include {self.end_conversation_token} at the end of your message (which will be automatically removed before the user sees it)."
+            }]
+        
+        # Combine the user history into a single context
+        context = "\n\n".join(user_history)
+        
+        # Create a prompt that includes the context from the replied-to user
+        replied_to_username = replied_to_msg.author.display_name
+        prompt = f"I'm replying to messages from user '{replied_to_username}'. Here are their recent messages:\n\n{context}\n\nPlease analyze or explain the content of these messages."
+        
+        # Add the analysis request to the conversation
+        conversation.append({
+            "role": "user",
+            "content": prompt
+        })
+        
+        # Estimate token count and check for warnings
+        estimated_tokens = self.estimate_token_count(conversation)
+        
+        # If approaching token limit, warn user and continue
+        if estimated_tokens > self.max_tokens_warning and estimated_tokens <= self.max_tokens_limit:
+            await message.reply("⚠️ Our conversation is getting quite long. Consider ending it soon to restart with a fresh context.")
+        
+        # If exceeding token limit, auto-end conversation
+        if estimated_tokens > self.max_tokens_limit:
+            await message.reply("Our conversation has reached the context limit. I'll need to end this chat session. Feel free to start a new one with 'Hey Axis'!")
+            await self.mark_conversation_inactive(user_id, channel_id)
+            await self.clear_conversation(None, user_id, channel_id)
+            return
+        
+        # Trim conversation to fit context window
+        trimmed_conversation = self.trim_conversation(conversation)
+        
+        # Generate response
+        response_text = await self.query_gemini(trimmed_conversation)
+        
+        # Add assistant response to conversation
+        conversation.append({
+            "role": "assistant",
+            "content": response_text
+        })
+        
+        # Save updated conversation
+        await self.save_conversation(user_id, channel_id, conversation)
+        
+        # Mark as active conversation
+        await self.mark_conversation_active(user_id, channel_id)
+        
+        # Send response to user, splitting if necessary
+        if len(response_text) > 2000:
+            chunks = [response_text[i:i+1990] for i in range(0, len(response_text), 1990)]
+            for i, chunk in enumerate(chunks):
+                if i == 0:
+                    await message.reply(chunk)
+                else:
+                    await message.channel.send(chunk)
+        else:
+            await message.reply(response_text)
 
     async def process_ai_query(self, message, query):
         """Process an AI query and respond"""
