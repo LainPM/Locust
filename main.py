@@ -16,21 +16,35 @@ async def load_systems():
     """Load and initialize all systems"""
     # Import systems
     from systems.leveling import LevelingSystem
+    from systems.starboard import StarboardSystem
     
     # Create system instances
     leveling_system = LevelingSystem(bot)
+    starboard_system = StarboardSystem(bot)
     
     # Register systems with the bot
     bot.register_system("LevelingSystem", leveling_system)
+    bot.register_system("StarboardSystem", starboard_system)
     
     # Initialize all systems
     await leveling_system.initialize()
+    await starboard_system.initialize()
 
 async def load_commands():
     """Load all command files"""
     # Will load all command modules from the commands/ directory
-    # For now, we'll just load the rank command directly
+    # For now, we'll just load specific commands
     await bot.load_extension("commands.leveling.rank")
+    await bot.load_extension("commands.starboard.setup")
+
+async def cleanup_systems():
+    """Clean up all systems properly before shutdown"""
+    print("Cleaning up systems...")
+    
+    # Clean up starboard system
+    starboard_system = await bot.get_system("StarboardSystem")
+    if starboard_system:
+        await starboard_system.cleanup()
 
 @bot.event
 async def on_ready():
@@ -54,6 +68,15 @@ async def on_ready():
     ))
     
     print("Bot setup complete and ready to go!")
+
+@bot.event
+async def on_disconnect():
+    """Called when the bot disconnects from Discord"""
+    # Perform cleanup
+    try:
+        await cleanup_systems()
+    except Exception as e:
+        print(f"Error during cleanup: {e}")
 
 # Run the bot
 if __name__ == "__main__":
