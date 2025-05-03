@@ -201,15 +201,15 @@ class Roblox(commands.Cog):
                         profile_data = await response.json()
                         print(f"Profile header data found: {profile_data}")
                         
-                        visits = profile_data.get("ProfileVisits", None)
-                        place_visits = profile_data.get("PlaceVisits", None)
+                        visits = profile_data.get("ProfileVisits", 0)
+                        place_visits = profile_data.get("PlaceVisits", 0)
                         
                         if visits or place_visits:
                             return {
-                                "profile_visits": str(visits) if visits else None,
-                                "place_visits": str(place_visits) if place_visits else None,
-                                "active_players": profile_data.get("ActivePlayers", None),
-                                "group_visits": profile_data.get("GroupVisits", None)
+                                "profile_visits": str(visits) if visits else 0,
+                                "place_visits": str(place_visits) if place_visits else 0,
+                                "active_players": profile_data.get("ActivePlayers", 0),
+                                "group_visits": profile_data.get("GroupVisits", 0)
                             }
             except Exception as e:
                 print(f"Error getting profile stats from API: {e}")
@@ -224,10 +224,10 @@ class Roblox(commands.Cog):
                 if response.status != 200:
                     print(f"Failed to get profile page, status: {response.status}")
                     return {
-                        "profile_visits": None,
-                        "place_visits": None,
-                        "active_players": None,
-                        "group_visits": None
+                        "profile_visits": 0,
+                        "place_visits": 0,
+                        "active_players": 0,
+                        "group_visits": 0
                     }
                 
                 html = await response.text()
