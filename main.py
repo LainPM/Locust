@@ -17,16 +17,20 @@ async def load_systems():
     # Import systems
     from systems.leveling import LevelingSystem
     from systems.starboard import StarboardSystem
+    from systems.moderation import ModerationSystem
     
     # Create system instances
     leveling_system = LevelingSystem(bot)
     starboard_system = StarboardSystem(bot)
+    moderation_system = ModerationSystem(bot)
     
     # Register systems with the bot
     bot.register_system("LevelingSystem", leveling_system)
     bot.register_system("StarboardSystem", starboard_system)
+    bot.register_system("ModerationSystem", moderation_system)
     
-    # Initialize all systems
+    # Initialize all systems in priority order (moderation first)
+    await moderation_system.initialize()
     await leveling_system.initialize()
     await starboard_system.initialize()
 
@@ -36,6 +40,7 @@ async def load_commands():
     # For now, we'll just load specific commands
     await bot.load_extension("commands.leveling.rank")
     await bot.load_extension("commands.starboard.setup")
+    await bot.load_extension("commands.moderation.setup")
 
 async def cleanup_systems():
     """Clean up all systems properly before shutdown"""
