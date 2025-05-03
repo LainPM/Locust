@@ -4,6 +4,7 @@ import discord
 import asyncio
 from core.bot import AxisBot
 from core.events import EventDispatcher
+from core.database import DatabaseManager
 from dotenv import load_dotenv
 from utils.command_loader import CommandLoader
 
@@ -16,6 +17,7 @@ bot = AxisBot(command_prefix="!")
 async def load_systems():
     """Load and initialize all systems"""
     # Import systems
+    from systems.basic import BasicSystem
     from systems.leveling import LevelingSystem
     from systems.starboard import StarboardSystem
     from systems.moderation import ModerationSystem
@@ -26,6 +28,7 @@ async def load_systems():
     from systems.utility import UtilitySystem
     
     # Create system instances
+    basic_system = BasicSystem(bot)
     leveling_system = LevelingSystem(bot)
     starboard_system = StarboardSystem(bot)
     moderation_system = ModerationSystem(bot)
@@ -36,6 +39,7 @@ async def load_systems():
     utility_system = UtilitySystem(bot)
     
     # Register systems with the bot
+    bot.register_system("BasicSystem", basic_system)
     bot.register_system("LevelingSystem", leveling_system)
     bot.register_system("StarboardSystem", starboard_system)
     bot.register_system("ModerationSystem", moderation_system)
@@ -46,7 +50,9 @@ async def load_systems():
     bot.register_system("UtilitySystem", utility_system)
     
     # Initialize all systems in priority order
-    # Moderation first as it's critical
+    # Basic system first
+    await basic_system.initialize()
+    # Then moderation as it's critical
     await moderation_system.initialize()
     # Then core systems
     await ai_system.initialize()
@@ -80,6 +86,9 @@ async def cleanup_systems():
 async def on_ready():
     """Called when the bot is ready"""
     print(f"Bot is ready. Logged in as {bot.user}")
+    
+    # Initialize database manager
+    bot.db_manager = DatabaseManager(bot)
     
     # Set up the event dispatcher
     event_dispatcher = EventDispatcher(bot)
