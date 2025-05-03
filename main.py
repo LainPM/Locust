@@ -5,6 +5,7 @@ import asyncio
 from core.bot import AxisBot
 from core.events import EventDispatcher
 from dotenv import load_dotenv
+from utils.command_loader import CommandLoader
 
 # Load environment variables
 load_dotenv()
@@ -18,38 +19,62 @@ async def load_systems():
     from systems.leveling import LevelingSystem
     from systems.starboard import StarboardSystem
     from systems.moderation import ModerationSystem
+    from systems.marketplace import MarketplaceSystem
+    from systems.tickets import TicketSystem
+    from systems.fun import FunSystem
+    from systems.ai import AISystem
+    from systems.utility import UtilitySystem
     
     # Create system instances
     leveling_system = LevelingSystem(bot)
     starboard_system = StarboardSystem(bot)
     moderation_system = ModerationSystem(bot)
+    marketplace_system = MarketplaceSystem(bot)
+    ticket_system = TicketSystem(bot)
+    fun_system = FunSystem(bot)
+    ai_system = AISystem(bot)
+    utility_system = UtilitySystem(bot)
     
     # Register systems with the bot
     bot.register_system("LevelingSystem", leveling_system)
     bot.register_system("StarboardSystem", starboard_system)
     bot.register_system("ModerationSystem", moderation_system)
+    bot.register_system("MarketplaceSystem", marketplace_system)
+    bot.register_system("TicketSystem", ticket_system)
+    bot.register_system("FunSystem", fun_system)
+    bot.register_system("AISystem", ai_system)
+    bot.register_system("UtilitySystem", utility_system)
     
-    # Initialize all systems in priority order (moderation first)
+    # Initialize all systems in priority order
+    # Moderation first as it's critical
     await moderation_system.initialize()
+    # Then core systems
+    await ai_system.initialize()
     await leveling_system.initialize()
     await starboard_system.initialize()
+    # Then secondary systems
+    await marketplace_system.initialize()
+    await ticket_system.initialize()
+    await utility_system.initialize()
+    await fun_system.initialize()
 
 async def load_commands():
     """Load all command files"""
-    # Will load all command modules from the commands/ directory
-    # For now, we'll just load specific commands
-    await bot.load_extension("commands.leveling.rank")
-    await bot.load_extension("commands.starboard.setup")
-    await bot.load_extension("commands.moderation.setup")
+    # Use the CommandLoader utility to load all commands
+    await CommandLoader.load_all_commands(bot)
 
 async def cleanup_systems():
     """Clean up all systems properly before shutdown"""
     print("Cleaning up systems...")
     
-    # Clean up starboard system
-    starboard_system = await bot.get_system("StarboardSystem")
-    if starboard_system:
-        await starboard_system.cleanup()
+    # Get all registered systems
+    for system_name, system in bot.systems.items():
+        if hasattr(system, 'cleanup'):
+            try:
+                await system.cleanup()
+                print(f"Cleaned up {system_name}")
+            except Exception as e:
+                print(f"Error cleaning up {system_name}: {e}")
 
 @bot.event
 async def on_ready():
