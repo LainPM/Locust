@@ -66,7 +66,7 @@ class LevelingSystem(System):
         """Update settings for the leveling system in a guild"""
         return await self.storage.update_guild_settings(guild_id, settings)
     
-    @System.priority(50)  # Medium priority for this event
+    @System.priority(50)  # Added the correct parameter here
     async def on_message(self, message):
         """Process messages for XP gain"""
         # Skip if message is in DM
