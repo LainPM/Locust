@@ -21,12 +21,13 @@ class AISystem(System):
     async def initialize(self):
         """Initialize the AI system"""
         # Register event handlers
-        self.register_event("on_message", self.processor.process_message, priority=20)
+        self.bot.register_event_handler("on_message", self.processor.process_message, priority=20)
         
         # Start cleanup task
         self.bot.loop.create_task(self.processor.cleanup_old_data())
         
         print("AI system initialized")
+        return True
     
     async def cleanup(self):
         """Clean up resources when bot is shutting down"""
