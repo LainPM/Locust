@@ -3,6 +3,7 @@ import abc
 import logging
 import asyncio
 import inspect
+import discord
 from typing import Dict, List, Any, Optional, Callable, Coroutine, Union, TypeVar, Generic
 
 T = TypeVar('T')
