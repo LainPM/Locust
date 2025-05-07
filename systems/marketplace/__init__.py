@@ -24,7 +24,7 @@ class MarketplaceSystem(System):
     async def initialize(self):
         """Initialize the marketplace system"""
         # Register event handlers
-        self.register_event("on_message", self.processor.process_message, priority=40)
+        self.bot.register_event_handler("on_message", self.processor.process_message, priority=40)
         
         # Load settings from database for all guilds
         await self.load_settings()
@@ -33,22 +33,39 @@ class MarketplaceSystem(System):
         await self.start_cleanup_tasks()
         
         print("Marketplace system initialized")
+        return True
     
     async def load_settings(self):
         """Load settings from database"""
-        collection = self.bot.db["marketplace_settings"]
-        async for doc in collection.find({}):
-            guild_id = doc["guild_id"]
-            self.settings_cache[guild_id] = doc
-        
-        print(f"Loaded marketplace settings for {len(self.settings_cache)} guilds")
+        try:
+            collection = self.bot.db["marketplace_settings"]
+            async for doc in collection.find({}):
+                guild_id = doc["guild_id"]
+                self.settings_cache[guild_id] = doc
+            
+            print(f"Loaded marketplace settings for {len(self.settings_cache)} guilds")
+        except Exception as e:
+            print(f"Error loading marketplace settings: {e}")
+            # Initialize with empty settings to prevent errors
+            self.settings_cache = {}
     
     async def get_settings(self, guild_id: int):
         """Get settings for a guild"""
         if guild_id not in self.settings_cache:
             # Load or create default settings
-            settings = await self.storage.get_settings(guild_id)
-            self.settings_cache[guild_id] = settings
+            try:
+                settings = await self.storage.get_settings(guild_id)
+                self.settings_cache[guild_id] = settings
+            except Exception as e:
+                print(f"Error getting marketplace settings: {e}")
+                # Return default settings if database is unavailable
+                return {
+                    "guild_id": guild_id,
+                    "enabled": False,
+                    "hiring_channel_id": None,
+                    "forhire_channel_id": None,
+                    "selling_channel_id": None
+                }
         
         return self.settings_cache[guild_id]
     
