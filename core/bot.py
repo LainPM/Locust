@@ -57,9 +57,26 @@ class AxisBot(commands.Bot):
                 self.logger.warning("No MONGO_URI provided, database features will be unavailable")
             
             # Initialize event handlers dictionary
-            for event_name in dir(discord.on_):
-                if event_name.startswith('on_') and not event_name.startswith('__'):
-                    self.event_handlers[event_name] = []
+            event_names = [
+                'on_message', 
+                'on_message_delete', 
+                'on_message_edit',
+                'on_reaction_add', 
+                'on_reaction_remove',
+                'on_member_join', 
+                'on_member_remove',
+                'on_guild_join', 
+                'on_guild_remove',
+                'on_guild_update',
+                'on_ready',
+                'on_disconnect',
+                'on_error',
+                'on_voice_state_update',
+                'on_interaction'
+            ]
+
+for event_name in event_names:
+    self.event_handlers[event_name] = []
             
             # Add additional custom events
             custom_events = [
