@@ -45,54 +45,54 @@ class AxisBot(commands.Bot):
         }
     
     async def setup_hook(self):
-    """Called when the bot is starting up"""
-    try:
-        # Set up MongoDB
-        mongo_uri = os.getenv("MONGO_URI")
-        if mongo_uri:
-            self.mongo_client = motor.motor_asyncio.AsyncIOMotorClient(mongo_uri)
-            self.db = self.mongo_client["discord_bot"]
-            self.logger.info("Database connection established")
-        else:
-            self.logger.warning("No MONGO_URI provided, database features will be unavailable")
-        
-        # Initialize event handlers dictionary
-        event_names = [
-            'on_message', 
-            'on_message_delete', 
-            'on_message_edit',
-            'on_reaction_add', 
-            'on_reaction_remove',
-            'on_member_join', 
-            'on_member_remove',
-            'on_guild_join', 
-            'on_guild_remove',
-            'on_guild_update',
-            'on_ready',
-            'on_disconnect',
-            'on_error',
-            'on_voice_state_update',
-            'on_interaction'
-        ]
-        
-        for event_name in event_names:
-            self.event_handlers[event_name] = []
-        
-        # Add additional custom events
-        custom_events = [
-            "on_system_error",
-            "on_database_error",
-            "on_command_completion"
-        ]
-        
-        for event_name in custom_events:
-            if event_name not in self.event_handlers:
+        """Called when the bot is starting up"""
+        try:
+            # Set up MongoDB
+            mongo_uri = os.getenv("MONGO_URI")
+            if mongo_uri:
+                self.mongo_client = motor.motor_asyncio.AsyncIOMotorClient(mongo_uri)
+                self.db = self.mongo_client["discord_bot"]
+                self.logger.info("Database connection established")
+            else:
+                self.logger.warning("No MONGO_URI provided, database features will be unavailable")
+            
+            # Initialize event handlers dictionary
+            event_names = [
+                'on_message', 
+                'on_message_delete', 
+                'on_message_edit',
+                'on_reaction_add', 
+                'on_reaction_remove',
+                'on_member_join', 
+                'on_member_remove',
+                'on_guild_join', 
+                'on_guild_remove',
+                'on_guild_update',
+                'on_ready',
+                'on_disconnect',
+                'on_error',
+                'on_voice_state_update',
+                'on_interaction'
+            ]
+            
+            for event_name in event_names:
                 self.event_handlers[event_name] = []
-        
-        self.logger.info("Bot setup complete")
-    except Exception as e:
-        self.logger.error(f"Error in setup_hook: {e}", exc_info=True)
-        raise
+            
+            # Add additional custom events
+            custom_events = [
+                "on_system_error",
+                "on_database_error",
+                "on_command_completion"
+            ]
+            
+            for event_name in custom_events:
+                if event_name not in self.event_handlers:
+                    self.event_handlers[event_name] = []
+            
+            self.logger.info("Bot setup complete")
+        except Exception as e:
+            self.logger.error(f"Error in setup_hook: {e}", exc_info=True)
+            raise
     
     async def load_commands(self):
         """Load all command modules"""
