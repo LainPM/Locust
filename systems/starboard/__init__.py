@@ -24,7 +24,7 @@ class StarboardSystem(System):
     async def initialize(self):
         """Initialize the starboard system"""
         # Register event handlers
-        self.register_event("on_reaction_add", self.processor.process_reaction_add, priority=50)
+        self.bot.register_event_handler("on_reaction_add", self.processor.process_reaction_add, priority=50)
         self.register_event("on_reaction_remove", self.processor.process_reaction_remove, priority=50)
         self.register_event("on_message", self.processor.process_message, priority=40)
         
