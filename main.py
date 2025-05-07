@@ -14,6 +14,7 @@ from core.database import DatabaseManager
 from dotenv import load_dotenv
 from utils.command_loader import CommandLoader
 from systems.base_system import System
+from systems.music import MusicSystem
 
 # Configure logging
 logging.basicConfig(
@@ -43,7 +44,8 @@ SYSTEM_PRIORITIES = {
     "MarketplaceSystem": 50,
     "TicketSystem": 40,
     "UtilitySystem": 30,
-    "FunSystem": 20
+    "FunSystem": 20,
+    "MusicSystem": 10,
 }
 
 # Critical systems that must be initialized for the bot to function
@@ -111,7 +113,6 @@ async def load_systems():
             
             # Register with bot
             bot.register_system(system_name, system_instance)
-            
             # Add to the info dictionary for initialization
             system_info["instance"] = system_instance
             
