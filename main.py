@@ -16,6 +16,9 @@ from utils.command_loader import CommandLoader
 from systems.base_system import System
 from systems.music import MusicSystem
 
+# Create necessary directories
+os.makedirs('logs', exist_ok=True)
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,

@@ -1,1 +1,2 @@
-Locust Discord Bot
+# Axis Discord Bot
+Temporary Info.
