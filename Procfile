@@ -1,1 +1,1 @@
-worker: target/release/axis-bot
+worker: bin/axis-bot
