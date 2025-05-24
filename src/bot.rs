@@ -1,8 +1,7 @@
 use serenity::async_trait;
 use serenity::builder::{CreateInteractionResponse, CreateInteractionResponseMessage};
 use serenity::client::{Context, EventHandler};
-use serenity::model::application::interaction::{Interaction, InteractionResponseType};
-use serenity::model::application::command::Command;
+// Command, Interaction, InteractionResponseType are expected to be in prelude
 use serenity::model::gateway::Ready;
 use serenity::model::prelude::*;
 use serenity::prelude::*;
@@ -39,14 +38,14 @@ impl EventHandler for Handler {
     async fn ready(&self, ctx: Context, ready: Ready) {
         info!("{} is connected and ready!", ready.user.name);
         
-        let commands = Command::create_global_commands(&ctx.http, vec![
+        let register_commands = vec![
             commands::register_ping(),
             commands::register_serverinfo(),
             commands::register_membercount(),
-        ])
-        .await;
+        ];
 
-        match commands {
+        // Assuming Command is in prelude (e.g. serenity::model::prelude::Command)
+        match Command::set_global_commands(&ctx.http, register_commands).await {
             Ok(_) => info!("Successfully registered application commands"),
             Err(e) => error!("Failed to register application commands: {}", e),
         }
@@ -82,22 +81,17 @@ impl EventHandler for Handler {
         }
 
         if self.gemini_client.should_respond_to_message(&msg.content, &self.config.bot_name) {
-            let typing = msg.channel_id.start_typing(&ctx.http);
+            let _typing_guard = msg.channel_id.start_typing(&ctx.http); // RAII guard
             
             match self.gemini_client.generate_response(&msg.content).await {
                 Ok(response) => {
-                    if let Ok(typing) = typing {
-                        typing.stop();
-                    }
-                    
+                    // Typing stops when _typing_guard is dropped at the end of the block
                     if let Err(e) = msg.channel_id.say(&ctx.http, response).await {
                         error!("Failed to send AI response: {}", e);
                     }
                 }
                 Err(e) => {
-                    if let Ok(typing) = typing {
-                        typing.stop();
-                    }
+                    // Typing stops when _typing_guard is dropped at the end of the block
                     error!("Failed to generate AI response: {}", e);
                     
                     let fallback_message = if e.to_string().contains("timeout") {
