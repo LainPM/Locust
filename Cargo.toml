@@ -3,17 +3,13 @@ name = "axis-bot"
 version = "0.1.0"
 edition = "2021"
 
-[[bin]]
-name = "axis-bot"
-path = "src/main.rs"
-
 [dependencies]
-tokio = { version = "1", features = ["full"] }
-serenity = { version = "0.12", default-features = false, features = ["client", "gateway", "rustls_backend", "model", "cache"] }
+tokio = { version = "1.40", features = ["full"] }
+serenity = { version = "0.13", default-features = false, features = ["client", "gateway", "rustls_backend", "model", "cache"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-reqwest = { version = "0.11", features = ["json", "rustls-tls"], default-features = false }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 anyhow = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
