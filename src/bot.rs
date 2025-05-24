@@ -53,31 +53,34 @@ impl EventHandler for Handler {
     }
 
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
-        if let Interaction::ApplicationCommand(command) = interaction {
-            let result = match command.data.name.as_str() {
-                "ping" => commands::ping(&ctx, &command).await,
-                "serverinfo" => commands::serverinfo(&ctx, &command).await,
-                "membercount" => commands::membercount(&ctx, &command).await,
-                _ => {
-                    error!("Unknown command: {}", command.data.name);
-                    Ok(())
-                }
-            };
+        match interaction {
+            Interaction::Command(command) => {
+                let result = match command.data.name.as_str() {
+                    "ping" => commands::ping(&ctx, &command).await,
+                    "serverinfo" => commands::serverinfo(&ctx, &command).await,
+                    "membercount" => commands::membercount(&ctx, &command).await,
+                    _ => {
+                        error!("Unknown command: {}", command.data.name);
+                        Ok(())
+                    }
+                };
 
-            if let Err(e) = result {
-                error!("Error handling command {}: {}", command.data.name, e);
-                let _ = command
-                    .create_interaction_response(&ctx.http, |response| {
-                        response
-                            .kind(InteractionResponseType::ChannelMessageWithSource)
-                            .interaction_response_data(|message| {
-                                message
-                                    .content("An error occurred while processing the command.")
-                                    .ephemeral(true)
-                            })
-                    })
-                    .await;
+                if let Err(e) = result {
+                    error!("Error handling command {}: {}", command.data.name, e);
+                    let _ = command
+                        .create_response(&ctx.http, |response| {
+                            response
+                                .kind(InteractionResponseType::ChannelMessageWithSource)
+                                .interaction_response_data(|message| {
+                                    message
+                                        .content("An error occurred while processing the command.")
+                                        .ephemeral(true)
+                                })
+                        })
+                        .await;
+                }
             }
+            _ => {}
         }
     }
 
