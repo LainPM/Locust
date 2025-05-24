@@ -7,19 +7,15 @@ pub async fn ping(ctx: &Context, command: &CommandInteraction) -> Result<(), ser
     let http = ctx.http.clone();
     let start = std::time::Instant::now();
     
-    let initial_response = CreateInteractionResponse::Message(
-        CreateInteractionResponseMessage::new()
-            .content("Pinging...")
-    );
-    command.create_response(&http, initial_response).await?;
+    command.defer(&http).await?;
     
     let duration = start.elapsed();
     let api_latency = duration.as_millis();
     
-    let ws_latency = ctx.shard.lock().await
-        .latency()
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
+    let ws_latency = {
+        let shard = ctx.shard.lock().await;
+        shard.latency().map(|d| d.as_millis()).unwrap_or(0)
+    };
     
     let embed = CreateEmbed::new()
         .title("🏓 Pong!")
