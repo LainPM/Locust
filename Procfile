@@ -1,1 +1,1 @@
-worker: target/x86_64-unknown-linux-musl/release/axis-bot
+worker: src/main.rs
