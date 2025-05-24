@@ -1,6 +1,9 @@
 use reqwest::Client;
 use serde_json::{json, Value};
 use anyhow::{Result, Context};
+use dashmap::DashMap;
+use serenity::model::id::{ChannelId, UserId};
+use std::sync::Arc;
 
 pub struct GeminiClient {
     client: Client,
@@ -59,7 +62,22 @@ impl GeminiClient {
         }
     }
 
-    pub fn should_respond_to_message(&self, content: &str, bot_name: &str) -> bool {
+    pub fn should_respond_to_message(
+        &self,
+        content: &str,
+        bot_name: &str,
+        author_id: UserId,
+        channel_id: ChannelId,
+        active_conversations: &Arc<DashMap<ChannelId, UserId>>,
+    ) -> bool {
+        // Check for active conversation
+        if let Some(active_user_id) = active_conversations.get(&channel_id) {
+            if *active_user_id == author_id {
+                return true; // Active conversation with this user in this channel
+            }
+        }
+
+        // If no active conversation, check for trigger phrases
         let content_lower = content.to_lowercase().trim().to_string();
         let bot_name_lower = bot_name.to_lowercase();
         
@@ -73,6 +91,10 @@ impl GeminiClient {
             format!("hello {},", bot_name_lower),
         ];
         
-        triggers.iter().any(|trigger| content_lower.starts_with(trigger))
+        if triggers.iter().any(|trigger| content_lower.starts_with(trigger)) {
+            return true; // Trigger phrase detected
+        }
+
+        false // Neither active conversation nor trigger phrase
     }
 }

@@ -7,20 +7,20 @@ pub async fn ping(ctx: &Context, command: &CommandInteraction) -> Result<(), ser
     let http = ctx.http.clone(); // Clone http client
     let start = std::time::Instant::now();
     
-    let response = CreateInteractionResponse::Message(
-        CreateInteractionResponseMessage::new().content("🏓 Pong!")
-    );
-    
-    command.create_response(&http, response).await?;
+    // Initial response removed.
 
     let duration = start.elapsed();
     let api_latency = duration.as_millis();
     
-    let latency_text = format!("🏓 Pong!\n**API Latency:** {}ms", api_latency);
+    // latency_text now only contains the latency.
+    let latency_text = format!("**API Latency:** {}ms", api_latency);
 
+    // Create the response, as there's no initial message to edit.
     command
-        .edit_response(&http, // Use cloned http
-            EditInteractionResponse::new().content(latency_text)
+        .create_response(&http, 
+            CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new().content(latency_text)
+            )
         )
         .await?;
 
@@ -136,25 +136,28 @@ pub async fn membercount(ctx: &Context, command: &CommandInteraction) -> Result<
     };
 
     // Perform cache access and data processing in a separate block, returning a Result.
-    let message_result: Result<String, ()> = {
-        let guild_option = ctx.cache.guild(guild_id); // Use guild_option
+    let guild_data_result: Result<(String, u64), ()> = { // Renamed and type changed
+        let guild_option = ctx.cache.guild(guild_id);
         match guild_option {
-            Some(guild_ref) => { // Use guild_ref for the CacheRef
+            Some(guild_ref) => {
                 let owned_guild = (*guild_ref).clone();
-                Ok(format!(
-                    "This server, **{}**, has **{}** members.",
-                    owned_guild.name, owned_guild.member_count
-                ))
+                Ok((owned_guild.name.clone(), owned_guild.member_count)) // Return tuple
             }
             None => Err(()),
         }
     }; // CacheRef (guild_ref) is dropped here.
 
     // Handle the result of cache access.
-    match message_result {
-        Ok(message_content) => {
+    match guild_data_result {
+        Ok((guild_name, member_count)) => {
+            let embed = CreateEmbed::new()
+                .title("Member Statistics")
+                .color(0x00bfff) // Deep sky blue
+                .field("Server", guild_name, true)
+                .field("Members", member_count.to_string(), true);
+
             let response = CreateInteractionResponse::Message(
-                CreateInteractionResponseMessage::new().content(message_content)
+                CreateInteractionResponseMessage::new().embed(embed)
             );
             command.create_response(&http, response).await?;
         }
