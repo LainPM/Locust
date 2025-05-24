@@ -14,9 +14,18 @@ use tracing_subscriber;
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
+    info!("Starting Axis bot...");
 
-    let config = Config::from_env()?;
-    info!("Configuration loaded successfully");
+    let config = match Config::from_env() {
+        Ok(config) => {
+            info!("Configuration loaded successfully");
+            config
+        }
+        Err(e) => {
+            error!("Failed to load configuration: {}", e);
+            return Err(e);
+        }
+    };
 
     let handler = Handler::new(config.clone());
     
@@ -25,19 +34,27 @@ async fn main() -> Result<()> {
         | GatewayIntents::MESSAGE_CONTENT
         | GatewayIntents::GUILDS;
 
-    let mut client = Client::builder(&config.discord_token, intents)
+    let mut client = match Client::builder(&config.discord_token, intents)
         .event_handler(handler)
-        .await?;
+        .await
+    {
+        Ok(client) => client,
+        Err(e) => {
+            error!("Failed to create Discord client: {}", e);
+            return Err(e.into());
+        }
+    };
 
     {
         let mut data = client.data.write().await;
         data.insert::<ShardManagerContainer>(client.shard_manager.clone());
     }
 
-    info!("Starting Axis bot...");
+    info!("Axis bot is starting up...");
 
     if let Err(e) = client.start().await {
         error!("Client error: {:?}", e);
+        return Err(e.into());
     }
 
     Ok(())
