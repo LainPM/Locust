@@ -1,4 +1,5 @@
 use serenity::async_trait;
+use serenity::builder::{CreateInteractionResponse, CreateInteractionResponseMessage};
 use serenity::client::{Context, EventHandler};
 use serenity::model::application::interaction::{Interaction, InteractionResponseType};
 use serenity::model::application::command::Command;
@@ -38,12 +39,11 @@ impl EventHandler for Handler {
     async fn ready(&self, ctx: Context, ready: Ready) {
         info!("{} is connected and ready!", ready.user.name);
         
-        let commands = Command::set_global_application_commands(&ctx.http, |commands| {
-            commands
-                .create_application_command(|command| commands::register_ping(command))
-                .create_application_command(|command| commands::register_serverinfo(command))
-                .create_application_command(|command| commands::register_membercount(command))
-        })
+        let commands = Command::create_global_commands(&ctx.http, vec![
+            commands::register_ping(),
+            commands::register_serverinfo(),
+            commands::register_membercount(),
+        ])
         .await;
 
         match commands {
@@ -53,34 +53,26 @@ impl EventHandler for Handler {
     }
 
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
-        match interaction {
-            Interaction::Command(command) => {
-                let result = match command.data.name.as_str() {
-                    "ping" => commands::ping(&ctx, &command).await,
-                    "serverinfo" => commands::serverinfo(&ctx, &command).await,
-                    "membercount" => commands::membercount(&ctx, &command).await,
-                    _ => {
-                        error!("Unknown command: {}", command.data.name);
-                        Ok(())
-                    }
-                };
-
-                if let Err(e) = result {
-                    error!("Error handling command {}: {}", command.data.name, e);
-                    let _ = command
-                        .create_response(&ctx.http, |response| {
-                            response
-                                .kind(InteractionResponseType::ChannelMessageWithSource)
-                                .interaction_response_data(|message| {
-                                    message
-                                        .content("An error occurred while processing the command.")
-                                        .ephemeral(true)
-                                })
-                        })
-                        .await;
+        if let Interaction::Command(command) = interaction {
+            let result = match command.data.name.as_str() {
+                "ping" => commands::ping(&ctx, &command).await,
+                "serverinfo" => commands::serverinfo(&ctx, &command).await,
+                "membercount" => commands::membercount(&ctx, &command).await,
+                _ => {
+                    error!("Unknown command: {}", command.data.name);
+                    Ok(())
                 }
+            };
+
+            if let Err(e) = result {
+                error!("Error handling command {}: {}", command.data.name, e);
+                let response = CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new()
+                        .content("An error occurred while processing the command.")
+                        .ephemeral(true)
+                );
+                let _ = command.create_response(&ctx.http, response).await;
             }
-            _ => {}
         }
     }
 
