@@ -4,28 +4,38 @@ use serenity::prelude::*;
 use chrono::{DateTime, Utc};
 
 pub async fn ping(ctx: &Context, command: &ApplicationCommandInteraction) -> Result<(), serenity::Error> {
-    let latency = {
+    let start = std::time::Instant::now();
+    
+    command
+        .create_interaction_response(&ctx.http, |response| {
+            response.interaction_response_data(|message| message.content("🏓 Pong!"))
+        })
+        .await?;
+
+    let duration = start.elapsed();
+    let api_latency = duration.as_millis();
+    
+    let websocket_latency = {
         let data = ctx.data.read().await;
         data.get::<crate::bot::ShardManagerContainer>()
-            .map(|shard_manager| {
-                shard_manager.lock().await.shards_instantiated()
+            .and_then(|shard_manager| {
+                let shards = shard_manager.try_lock().ok()?;
+                shards.shards_instantiated()
                     .iter()
                     .next()
-                    .map(|(_, info)| info.latency)
-                    .flatten()
+                    .and_then(|(_, info)| info.latency)
+                    .map(|latency| latency.as_millis())
             })
-            .flatten()
     };
 
-    let latency_text = if let Some(latency) = latency {
-        format!("Pong! Latency: {:.2}ms", latency.as_millis())
-    } else {
-        "Pong! Latency: Unknown".to_string()
+    let latency_text = match websocket_latency {
+        Some(ws_latency) => format!("🏓 Pong!\n**API Latency:** {}ms\n**WebSocket Latency:** {}ms", api_latency, ws_latency),
+        None => format!("🏓 Pong!\n**API Latency:** {}ms\n**WebSocket Latency:** Unknown", api_latency),
     };
 
     command
-        .create_interaction_response(&ctx.http, |response| {
-            response.interaction_response_data(|message| message.content(latency_text))
+        .edit_original_interaction_response(&ctx.http, |response| {
+            response.content(latency_text)
         })
         .await?;
 
