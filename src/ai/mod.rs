@@ -24,7 +24,7 @@ impl GeminiClient {
         let payload = json!({
             "contents": [{
                 "parts": [{
-                    "text": format!("You are Axis, a helpful Discord bot. Respond to this message in a friendly and concise way: {}", prompt)
+                    "text": format!("You are Axis, a helpful Discord bot. Respond to this message in a friendly and concise way (max 2000 characters): {}", prompt)
                 }]
             }]
         });
@@ -32,13 +32,15 @@ impl GeminiClient {
         let response = self.client
             .post(&url)
             .json(&payload)
+            .timeout(std::time::Duration::from_secs(10))
             .send()
             .await
             .context("Failed to send request to Gemini API")?;
 
         if !response.status().is_success() {
+            let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
-            return Err(anyhow::anyhow!("Gemini API error: {}", error_text));
+            return Err(anyhow::anyhow!("Gemini API error {}: {}", status, error_text));
         }
 
         let json: Value = response.json().await
@@ -49,7 +51,12 @@ impl GeminiClient {
             .unwrap_or("I'm having trouble generating a response right now.")
             .to_string();
 
-        Ok(text)
+        // Ensure response fits Discord's message limit
+        if text.len() > 2000 {
+            Ok(format!("{}...", &text[..1997]))
+        } else {
+            Ok(text)
+        }
     }
 
     pub fn should_respond_to_message(&self, content: &str, bot_name: &str) -> bool {
