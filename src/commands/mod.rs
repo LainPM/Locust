@@ -1,4 +1,4 @@
-use serenity::builder::{CreateCommand, CreateEmbed, CreateInteractionResponse, CreateInteractionResponseMessage};
+use serenity::builder::{CreateCommand, CreateEmbed, CreateInteractionResponse, CreateInteractionResponseMessage, EditInteractionResponse};
 use serenity::model::prelude::*;
 use serenity::prelude::*;
 use chrono::{DateTime, Utc};
