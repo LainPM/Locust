@@ -8,7 +8,7 @@ name = "axis-bot"
 path = "src/main.rs"
 
 [dependencies]
-tokio = { version = "1.0", features = ["full"] }
+tokio = { version = "1", features = ["full"] }
 serenity = { version = "0.12", default-features = false, features = ["client", "gateway", "rustls_backend", "model", "cache"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
