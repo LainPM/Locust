@@ -1,16 +1,21 @@
-.env
-
-# Rust
-target/
+# Rust 2025
+/target/
 **/*.rs.bk
 Cargo.lock
 
 # IDE
 .vscode/
 .idea/
+*.swp
+*.swo
 
 # OS
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 Thumbs.db
 
 # Logs
@@ -19,3 +24,12 @@ logs/
 
 # Railway
 .railway/
+
+# Environment (use Railway dashboard instead)
+.env
+.env.local
+.env.*.local
+
+# Build artifacts
+/dist/
+/build/
