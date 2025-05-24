@@ -8,6 +8,14 @@ pub enum Intent {
     StartConversation,
     AskForHelp,
     ThankYou,
+    CheckPing,
+    CheckServerInfo,
+    CheckMemberCount,
+    AskUsername,
+    AskNickname,
+    AskUserId,
+    AskBio,
+    AskAvatar,
 }
 
 pub struct IntentMatcher {
@@ -22,6 +30,14 @@ impl IntentMatcher {
                 (vec!["hey", "hi", "hello", "yo", "sup", "help", "assist"], Intent::StartConversation),
                 (vec!["how do i", "can you help", "what is", "explain", "show me", "teach me"], Intent::AskForHelp),
                 (vec!["thanks", "thank you", "thx", "ty", "appreciated"], Intent::ThankYou),
+                (vec!["what is the ping", "check ping", "ping", "latency", "bot ping", "what's the ping"], Intent::CheckPing),
+                (vec!["server info", "serverinfo", "guild info", "about this server", "server details"], Intent::CheckServerInfo),
+                (vec!["member count", "how many members", "membercount", "total members"], Intent::CheckMemberCount),
+                (vec!["what is my username", "my username", "what's my username", "my name"], Intent::AskUsername),
+                (vec!["what is my nickname", "my nickname", "what's my nickname", "my nick"], Intent::AskNickname),
+                (vec!["what is my id", "my user id", "what's my id", "my userid"], Intent::AskUserId),
+                (vec!["what is my bio", "my bio", "what's my bio", "my about me"], Intent::AskBio),
+                (vec!["my avatar", "what's my avatar", "my profile picture", "my pfp"], Intent::AskAvatar),
             ],
         }
     }
