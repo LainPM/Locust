@@ -101,10 +101,15 @@ impl EventHandler for Handler {
                     let _ = typing.map(|t| t.stop());
                     error!("Failed to generate AI response: {}", e);
                     
-                    let _ = msg
-                        .channel_id
-                        .say(&ctx.http, "Sorry, I'm having trouble generating a response right now.")
-                        .await;
+                    let fallback_message = if e.to_string().contains("timeout") {
+                        "Sorry, I'm taking too long to respond. Please try again!"
+                    } else if e.to_string().contains("API error") {
+                        "I'm having some technical difficulties right now. Please try again later!"
+                    } else {
+                        "Sorry, I'm having trouble generating a response right now."
+                    };
+                    
+                    let _ = msg.channel_id.say(&ctx.http, fallback_message).await;
                 }
             }
         }
