@@ -1,6 +1,19 @@
-__pycache__/
-.env
-/target
+# Rust
+target/
 **/*.rs.bk
 Cargo.lock
+
+# Environment variables
+.env
+
+# IDE
+.vscode/
+.idea/
+
+# OS
 .DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
