@@ -2,8 +2,10 @@ use serenity::builder::{CreateCommand, CreateEmbed, CreateInteractionResponse, C
 use serenity::model::prelude::*;
 use serenity::prelude::*;
 use chrono::{DateTime, Utc};
+use tracing::info;
 
 pub async fn ping(ctx: &Context, command: &CommandInteraction) -> Result<(), serenity::Error> {
+    info!("Ping command executed by {}", command.user.tag());
     let http = ctx.http.clone();
     let start = std::time::Instant::now();
     
@@ -16,6 +18,8 @@ pub async fn ping(ctx: &Context, command: &CommandInteraction) -> Result<(), ser
         let shard = ctx.shard.lock().await;
         shard.latency().map(|d| d.as_millis()).unwrap_or(0)
     };
+    
+    info!("Ping results - API: {}ms, WebSocket: {}ms", api_latency, ws_latency);
     
     let embed = CreateEmbed::new()
         .title("🏓 Pong!")
