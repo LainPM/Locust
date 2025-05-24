@@ -10,8 +10,6 @@ pub struct Config {
 
 impl Config {
     pub fn from_env() -> Result<Self> {
-        dotenv::dotenv().ok();
-        
         let discord_token = env::var("DISCORD_TOKEN")
             .context("DISCORD_TOKEN environment variable not set")?;
         
