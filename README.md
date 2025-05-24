@@ -1,83 +1,91 @@
-# Axis Bot
+# Axis Discord Bot (Rust)
 
-A modern Discord bot built with Rust, featuring slash commands and AI-powered conversations using Google's Gemini API.
+A fast and efficient Discord bot written in Rust with AI capabilities powered by Google's Gemini Flash API. Optimized for Railway deployment.
 
 ## Features
 
 - **Slash Commands:**
-  - `/ping` - Check bot latency
+  - `/ping` - Check the bot's latency
   - `/serverinfo` - Display detailed server information
-  - `/membercount` - Show current member count
-  
-- **AI Chat Integration:**
-  - Responds to messages starting with "hey axis", "hi axis", etc.
-  - Powered by Google Gemini 1.5 Flash API
-  - Natural, conversational responses
+  - `/membercount` - Show the current member count
 
-## Setup
+- **AI Integration:**
+  - Responds to messages starting with "hey axis", "hi axis", "hello axis", or "yo axis"
+  - Powered by Google's Gemini Flash API for natural conversations
 
-1. **Prerequisites:**
-   - Rust 1.70+ installed
-   - Discord bot token
-   - Google Gemini API key
+## Railway Deployment
 
-2. **Clone and Configure:**
-   ```bash
-   git clone <repository>
-   cd axis-bot
-   cp .env.example .env
+1. **Fork/Clone this repository**
+
+2. **Connect to Railway:**
+   - Visit [railway.app](https://railway.app)
+   - Connect your GitHub repository
+   - Railway will auto-detect the Rust project
+
+3. **Set Environment Variables in Railway Dashboard:**
+   ```
+   DISCORD_TOKEN=your_discord_bot_token_here
+   GEMINI_API_KEY=your_gemini_api_key_here
+   BOT_NAME=axis
    ```
 
-3. **Edit `.env`:**
-   ```
-   DISCORD_TOKEN=your_discord_bot_token
-   GEMINI_API_KEY=your_gemini_api_key
-   ```
+4. **Deploy:**
+   - Railway will automatically build and deploy your bot
+   - No additional configuration needed
 
-4. **Build and Run:**
-   ```bash
-   cargo build --release
-   cargo run --release
-   ```
+## Local Development (Optional)
 
-## Architecture
+If you want to run locally:
 
-- **Framework:** Poise (command framework built on Serenity)
-- **Async Runtime:** Tokio
-- **HTTP Client:** Reqwest
-- **Logging:** Tracing
+```bash
+git clone <repository-url>
+cd axis-bot
+
+# Set environment variables
+export DISCORD_TOKEN="your_token"
+export GEMINI_API_KEY="your_key"
+export BOT_NAME="axis"
+
+cargo run
+```
+
+## Usage
+
+### Slash Commands
+- Use `/ping` to check bot latency
+- Use `/serverinfo` in a server to get detailed information
+- Use `/membercount` to see how many members are in the server
+
+### AI Chat
+Simply start a message with "hey axis" or similar phrases and the bot will respond using AI.
+
+Example:
+```
+hey axis, how are you today?
+```
 
 ## Project Structure
 
 ```
 src/
-├── main.rs       # Entry point and event handling
-├── commands.rs   # Slash command implementations
-├── config.rs     # Configuration management
-└── gemini.rs     # Gemini API client
+├── main.rs          # Entry point
+├── config.rs        # Configuration handling
+├── bot.rs           # Event handler and bot logic
+├── commands/        # Slash commands implementation
+│   └── mod.rs
+└── ai/              # AI integration
+    └── mod.rs
 ```
 
-## Improvements Over Python Version
+## Performance
 
-- **Performance:** Compiled language with zero-cost abstractions
-- **Memory Safety:** Rust's ownership system prevents memory leaks
-- **Type Safety:** Strong static typing catches errors at compile time
-- **Concurrency:** Efficient async/await with Tokio runtime
-- **Binary Size:** Single deployable binary with no runtime dependencies
+This Rust implementation offers:
+- Low memory footprint (~10MB RAM usage)
+- Fast response times (<50ms for commands)
+- Efficient async handling
+- Robust error handling
+- No database dependencies for core features
 
-## Discord Permissions Required
+## License
 
-- Send Messages
-- Read Message Content
-- Use Slash Commands
-- Embed Links
-- Read Message History
-
-## Deployment
-
-Build for production:
-```bash
-cargo build --release
-```
-
-The optimized binary will be in `target/release/axis-bot`
+MIT License
