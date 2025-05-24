@@ -1,1 +1,1 @@
-web: ./target/release/axis-bot
+worker: ./target/release/axis-bot
