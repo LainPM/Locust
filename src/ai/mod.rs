@@ -1,8 +1,11 @@
+pub mod intents;
+
 use reqwest::Client;
 use serde_json::{json, Value};
 use anyhow::{Result, Context};
 use dashmap::DashMap;
 use serenity::model::id::{ChannelId, UserId};
+use serenity::model::prelude::User;
 use std::sync::Arc;
 
 pub struct GeminiClient {
@@ -18,18 +21,41 @@ impl GeminiClient {
         }
     }
 
-    pub async fn generate_response(&self, prompt: &str) -> Result<String> {
+    pub async fn generate_response(&self, prompt: &str, user: &User) -> Result<String> {
         let url = format!(
             "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={}",
             self.api_key
         );
 
+        let user_context = format!(
+            "User Info - Username: {}, ID: {}, Bot: {}",
+            user.tag(),
+            user.id,
+            user.bot
+        );
+
+        let system_prompt = format!(
+            "You are Axis, a helpful Discord bot specifically designed for a Roblox Development server. \
+            Your primary purpose is to assist with Roblox game development, Luau scripting, and development best practices. \
+            You have extensive knowledge about Roblox Studio, Roblox APIs, game design patterns, and optimization techniques. \
+            Be friendly, concise (max 2000 characters), and helpful. When providing code examples, use Luau syntax. \
+            Current user context: {}. \
+            User message: {}",
+            user_context, prompt
+        );
+
         let payload = json!({
             "contents": [{
                 "parts": [{
-                    "text": format!("You are Axis, a helpful Discord bot. Respond to this message in a friendly and concise way (max 2000 characters): {}", prompt)
+                    "text": system_prompt
                 }]
-            }]
+            }],
+            "generationConfig": {
+                "temperature": 0.7,
+                "topK": 40,
+                "topP": 0.95,
+                "maxOutputTokens": 800,
+            }
         });
 
         let response = self.client
@@ -54,7 +80,6 @@ impl GeminiClient {
             .unwrap_or("I'm having trouble generating a response right now.")
             .to_string();
 
-        // Ensure response fits Discord's message limit
         if text.len() > 2000 {
             Ok(format!("{}...", &text[..1997]))
         } else {
@@ -70,14 +95,12 @@ impl GeminiClient {
         channel_id: ChannelId,
         active_conversations: &Arc<DashMap<ChannelId, UserId>>,
     ) -> bool {
-        // Check for active conversation
         if let Some(active_user_id) = active_conversations.get(&channel_id) {
             if *active_user_id == author_id {
-                return true; // Active conversation with this user in this channel
+                return true;
             }
         }
 
-        // If no active conversation, check for trigger phrases
         let content_lower = content.to_lowercase().trim().to_string();
         let bot_name_lower = bot_name.to_lowercase();
         
@@ -86,15 +109,10 @@ impl GeminiClient {
             format!("hi {}", bot_name_lower),
             format!("hello {}", bot_name_lower),
             format!("yo {}", bot_name_lower),
-            format!("hey {},", bot_name_lower),
-            format!("hi {},", bot_name_lower),
-            format!("hello {},", bot_name_lower),
+            format!("{} help", bot_name_lower),
+            format!("@{}", bot_name_lower),
         ];
         
-        if triggers.iter().any(|trigger| content_lower.starts_with(trigger)) {
-            return true; // Trigger phrase detected
-        }
-
-        false // Neither active conversation nor trigger phrase
+        triggers.iter().any(|trigger| content_lower.contains(trigger))
     }
 }
