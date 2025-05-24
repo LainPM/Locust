@@ -15,7 +15,7 @@ use crate::config::Config;
 pub struct ShardManagerContainer;
 
 impl TypeMapKey for ShardManagerContainer {
-    type Value = Arc<Mutex<serenity::gateway::ShardManager>>;
+    type Value = Arc<serenity::gateway::ShardManager>;
 }
 
 pub struct Handler {
@@ -91,14 +91,18 @@ impl EventHandler for Handler {
             
             match self.gemini_client.generate_response(&msg.content).await {
                 Ok(response) => {
-                    let _ = typing.map(|t| t.stop());
+                    if let Ok(typing) = typing {
+                        typing.stop();
+                    }
                     
                     if let Err(e) = msg.channel_id.say(&ctx.http, response).await {
                         error!("Failed to send AI response: {}", e);
                     }
                 }
                 Err(e) => {
-                    let _ = typing.map(|t| t.stop());
+                    if let Ok(typing) = typing {
+                        typing.stop();
+                    }
                     error!("Failed to generate AI response: {}", e);
                     
                     let fallback_message = if e.to_string().contains("timeout") {
